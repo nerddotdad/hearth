@@ -4,11 +4,41 @@ from __future__ import annotations
 
 import os
 
-GRAFANA_PUBLIC_URL = os.environ.get("GRAFANA_PUBLIC_URL", "https://grafana.example.com").rstrip("/")
-DEFAULT_RUNBOOK_URL = os.environ.get(
-    "DEFAULT_RUNBOOK_URL",
-    "https://runbooks.prometheus-operator.dev/",
-)
+
+def _grafana_public_url() -> str:
+    try:
+        from config import config_or_none
+
+        cfg = config_or_none()
+        if cfg is not None:
+            value = cfg.get_str("core.grafana_public_url")
+            if value:
+                return value.rstrip("/")
+    except Exception:
+        pass
+    return os.environ.get("GRAFANA_PUBLIC_URL", "https://grafana.example.com").rstrip("/")
+
+
+def _default_runbook_url() -> str:
+    try:
+        from config import config_or_none
+
+        cfg = config_or_none()
+        if cfg is not None:
+            value = cfg.get_str("core.default_runbook_url")
+            if value:
+                return value.rstrip("/")
+    except Exception:
+        pass
+    return os.environ.get(
+        "DEFAULT_RUNBOOK_URL",
+        "https://runbooks.prometheus-operator.dev/",
+    ).rstrip("/")
+
+
+# Backward-compatible module attributes (resolved at import; prefer helpers in new code).
+GRAFANA_PUBLIC_URL = _grafana_public_url()
+DEFAULT_RUNBOOK_URL = _default_runbook_url()
 
 
 def ntfy_title(alert: dict) -> str:
@@ -87,9 +117,9 @@ def ntfy_body(alert: dict) -> str:
     runbook = (
         annotations.get("runbook_url")
         or annotations.get("runbook")
-        or DEFAULT_RUNBOOK_URL
+        or _default_runbook_url()
     )
-    grafana_alert = f"{GRAFANA_PUBLIC_URL}/alerting/list?search={labels.get('alertname', '')}"
+    grafana_alert = f"{_grafana_public_url()}/alerting/list?search={labels.get('alertname', '')}"
     links = f"\n\n---\n\n**Links:** [Runbook]({runbook})"
     if annotations.get("dashboard_url"):
         links += f" · [Dashboard]({annotations['dashboard_url']})"
@@ -243,7 +273,17 @@ def build_hermes_message(incident: dict) -> str:
                 f"{event.get('actor') or 'system'}{extra}"
             )
 
-    incidents_base = os.environ.get("INCIDENTS_PUBLIC_BASE_URL", "").rstrip("/")
+    incidents_base = ""
+    try:
+        from config import config_or_none
+
+        cfg = config_or_none()
+        if cfg is not None:
+            incidents_base = cfg.get_str("core.incidents_public_base_url").rstrip("/")
+    except Exception:
+        pass
+    if not incidents_base:
+        incidents_base = os.environ.get("INCIDENTS_PUBLIC_BASE_URL", "").rstrip("/")
     if incidents_base:
         lines.extend(["", f"Incident UI: {incidents_base}/incidents/{iid}"])
 

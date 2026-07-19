@@ -8,12 +8,13 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from config import ConfigStore, get_config
 from db import IncidentStore, utcnow
 from filters import incident_is_noise, is_ignored_alert
-from hermes_client import HermesClient, HermesError
+from hermes_client import HermesError
 from message_format import build_hermes_message, build_operator_message
 from query_parser import parse_query
-from raise_rules import RaiseSettingsStore, should_auto_raise
+from raise_rules import should_auto_raise
 
 SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -53,12 +54,10 @@ def severity_rank(severity: str | None) -> int:
 
 
 class IncidentService:
-    def __init__(self, store: IncidentStore, legacy_dir: Path, *, raise_settings_path: Path | None = None) -> None:
+    def __init__(self, store: IncidentStore, legacy_dir: Path, *, config: ConfigStore | None = None) -> None:
         self.store = store
         self.legacy_dir = legacy_dir
-        self.raise_settings = RaiseSettingsStore(
-            raise_settings_path or legacy_dir / "auto_raise_settings.json"
-        )
+        self._config = config
 
     def migrate_legacy_json(self) -> int:
         if not self.legacy_dir.is_dir():
@@ -175,15 +174,31 @@ class IncidentService:
             return visible[:limit], True, scan_offset
         return visible, False, scan_offset
 
+    @property
+    def config(self) -> ConfigStore:
+        return self._config or get_config()
+
     def raise_settings_dict(self) -> dict[str, Any]:
-        return self.raise_settings.load()
+        return self.config.raise_settings()
 
     def save_raise_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
-        return self.raise_settings.save(settings)
+        updates: dict[str, Any] = {}
+        if "enabled" in settings:
+            updates["auto_raise.enabled"] = bool(settings["enabled"])
+        if "group_open" in settings:
+            updates["auto_raise.group_open"] = bool(settings["group_open"])
+        if "min_severity" in settings and str(settings["min_severity"]).strip():
+            updates["auto_raise.min_severity"] = str(settings["min_severity"]).strip()
+        if "alertnames" in settings:
+            updates["auto_raise.alertnames"] = settings["alertnames"]
+        if "label_rules" in settings:
+            updates["auto_raise.label_rules"] = settings["label_rules"]
+        self.config.save_ui(updates)
+        return self.raise_settings_dict()
 
     def ingest_alertmanager_payload(self, payload: dict[str, Any]) -> list[tuple[str, str]]:
         events: list[tuple[str, str]] = []
-        rules = self.raise_settings.load()
+        rules = self.raise_settings_dict()
         for alert in payload.get("alerts") or []:
             if not isinstance(alert, dict):
                 continue
@@ -204,7 +219,7 @@ class IncidentService:
 
         fp = fingerprint(alert)
         status = str(alert.get("status") or "firing")
-        rules = rules or self.raise_settings.load()
+        rules = rules or self.raise_settings_dict()
 
         existing = self.store.get_alert(fp)
         if existing and existing.get("incident_id"):
@@ -534,6 +549,12 @@ class IncidentService:
         return self.store.add_note(incident_id, body, actor=actor)
 
     def investigate(self, incident_id: str, *, force: bool = False, actor: str = "bridge") -> dict[str, Any]:
+        from integrations.registry import get_registry
+
+        hermes_integ = get_registry().hermes()
+        if not hermes_integ.is_enabled():
+            raise HermesError("Hermes integration is disabled")
+
         incident = self.store.get_incident(incident_id)
         if incident is None:
             raise ValueError("incident not found")
@@ -547,7 +568,7 @@ class IncidentService:
         if export is None:
             raise ValueError("incident not found")
 
-        client = HermesClient()
+        client = hermes_integ.client()
         session_id = client.new_session()
         title = str(incident.get("title") or incident_id)
         client.rename_session(session_id, title)
@@ -571,9 +592,7 @@ class IncidentService:
         return self._investigate_result(incident_id, hermes)
 
     def _investigate_result(self, incident_id: str, hermes: dict[str, Any]) -> dict[str, Any]:
-        import os
-
-        base = os.environ.get("HERMES_PUBLIC_BASE_URL", "").rstrip("/")
+        base = self.config.get_str("hermes.public_base_url").rstrip("/")
         session_id = str(hermes.get("session_id") or "")
         return {
             "incident_id": incident_id,
@@ -610,7 +629,9 @@ class IncidentService:
         if not session_id:
             return None
         try:
-            data = HermesClient().get_session(session_id)
+            from integrations.registry import get_registry
+
+            data = get_registry().hermes().client().get_session(session_id)
         except HermesError:
             return None
         session = data.get("session") if isinstance(data.get("session"), dict) else data

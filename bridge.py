@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""Homelab incident funnel: ingest alerts, organize, merge, enrich, notify."""
+"""Hearth — homelab incident desk: ingest alerts, organize, merge, enrich, notify."""
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
-import re
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from config import get_config, init_config
 from db import IncidentStore
 from filters import ignored_summary
-from hermes_client import HermesClient, HermesError
+from hermes_client import HermesError
 from incidents import IncidentService, safe_id
+from integrations import init_registry
 from notifications import NotificationService
 from ui import (
     PAGE_SIZE,
@@ -35,21 +32,31 @@ from ui import (
 INCIDENT_DIR = Path(os.environ.get("INCIDENT_DIR", "/data/incidents"))
 DB_PATH = Path(os.environ.get("INCIDENT_DB", str(INCIDENT_DIR / "incidents.db")))
 PENDING_ID_FILE = INCIDENT_DIR / ".pending_incident"
-HERMES_WEBHOOK_URL = os.environ.get(
-    "HERMES_WEBHOOK_URL",
-    "http://hermes-oncall-app-template.ai.svc.cluster.local:8644/webhooks/homelab-alerts",
-)
-HERMES_WEBHOOK_SECRET = os.environ.get("HERMES_WEBHOOK_SECRET", "")
-TRIAGE_AUTH_TOKEN = os.environ.get("TRIAGE_AUTH_TOKEN", "")
-INCIDENTS_AUTH_TOKEN = os.environ.get("INCIDENTS_AUTH_TOKEN", "")
-HERMES_PUBLIC_BASE_URL = os.environ.get("HERMES_PUBLIC_BASE_URL", "").rstrip("/")
-INCIDENTS_PUBLIC_BASE_URL = os.environ.get("INCIDENTS_PUBLIC_BASE_URL", "").rstrip("/")
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8000"))
 MAX_BODY = int(os.environ.get("MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+APP_VERSION = Path(__file__).with_name("VERSION")
+try:
+    VERSION = APP_VERSION.read_text(encoding="utf-8").strip() or "6.0.0"
+except OSError:
+    VERSION = "6.0.0"
 
+CONFIG = init_config(INCIDENT_DIR / "hearth_settings.json", legacy_dir=INCIDENT_DIR)
+REGISTRY = init_registry()
 STORE = IncidentStore(DB_PATH)
-SERVICE = IncidentService(STORE, INCIDENT_DIR)
-NOTIFIER = NotificationService(STORE, INCIDENT_DIR / "notification_settings.json")
+SERVICE = IncidentService(STORE, INCIDENT_DIR, config=CONFIG)
+NOTIFIER = NotificationService(STORE, CONFIG)
+
+
+def _hermes_public_base() -> str:
+    return get_config().get_str("hermes.public_base_url").rstrip("/")
+
+
+def _triage_auth_token() -> str:
+    return get_config().get_str("core.triage_auth_token")
+
+
+def _incidents_auth_token() -> str:
+    return get_config().get_str("core.incidents_auth_token")
 
 
 def _list_params(params: dict[str, list[str]]) -> tuple[int, int, str, str]:
@@ -76,7 +83,8 @@ def _incident_id_from_query(query: str) -> str:
 
 
 def _investigate_actor(headers) -> str:
-    if INCIDENTS_AUTH_TOKEN and _token_matches(headers, "", INCIDENTS_AUTH_TOKEN):
+    token = _incidents_auth_token()
+    if token and _token_matches(headers, "", token):
         return "api"
     return "ui"
 
@@ -109,18 +117,16 @@ def _summarize_hook_payload(payload: dict) -> str:
 
 def _handle_alertmanager_hook(payload: dict) -> tuple[int, bytes]:
     sys.stderr.write(f"hook received: {_summarize_hook_payload(payload)}\n")
-    events = SERVICE.ingest_alertmanager_payload(payload)
-    if events:
-        ids = ", ".join(sorted({iid for iid, _ in events}))
-        sys.stderr.write(f"incidents touched: {ids}\n")
-        NOTIFIER.notify_many(events)
-    if not events:
-        return 200, b'{"ok":true,"skipped":"ignored or empty alerts"}'
-    return 200, json.dumps({"ok": True, "incidents": len(events)}).encode("utf-8")
 
+    def ingest(p: dict) -> list:
+        events = SERVICE.ingest_alertmanager_payload(p)
+        if events:
+            ids = ", ".join(sorted({iid for iid, _ in events}))
+            sys.stderr.write(f"incidents touched: {ids}\n")
+            NOTIFIER.notify_many(events)
+        return events
 
-def _sign_webhook(body: bytes, secret: str) -> str:
-    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return REGISTRY.prometheus().handle_webhook(payload, ingest)
 
 
 def _token_matches(headers, query: str, token: str) -> bool:
@@ -138,39 +144,21 @@ def _token_matches(headers, query: str, token: str) -> bool:
 
 
 def _check_incidents_auth(headers, query: str = "") -> bool:
-    if not INCIDENTS_AUTH_TOKEN:
+    token = _incidents_auth_token()
+    if not token:
         return True
-    return _token_matches(headers, query, INCIDENTS_AUTH_TOKEN)
+    return _token_matches(headers, query, token)
 
 
 def _check_triage_auth(headers, query: str = "") -> bool:
-    if not TRIAGE_AUTH_TOKEN:
+    token = _triage_auth_token()
+    if not token:
         return False
-    return _token_matches(headers, query, TRIAGE_AUTH_TOKEN)
+    return _token_matches(headers, query, token)
 
 
 def _forward_to_hermes(incident: dict) -> tuple[int, bytes]:
-    if not HERMES_WEBHOOK_SECRET:
-        return 503, b'{"error":"webhook secret not configured"}'
-    body = json.dumps(incident).encode("utf-8")
-    req = urllib.request.Request(
-        HERMES_WEBHOOK_URL,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "X-Webhook-Signature": _sign_webhook(body, HERMES_WEBHOOK_SECRET),
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
-    except urllib.error.URLError as exc:
-        return 502, json.dumps(
-            {"error": "hermes webhook unreachable", "detail": str(exc.reason)}
-        ).encode("utf-8")
+    return REGISTRY.hermes().forward_webhook(incident)
 
 
 def _read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
@@ -204,7 +192,7 @@ def _list_redirect_url(*, status: str = "", message: str = "") -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "homelab-alert-bridge/5.0"
+    server_version = f"hearth/{VERSION}"
 
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -268,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
         try:
-            client = HermesClient()
+            client = REGISTRY.hermes().client()
             for chunk in client.iter_stream(stream_id):
                 self.wfile.write(chunk)
                 self.wfile.flush()
@@ -283,7 +271,15 @@ class Handler(BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
 
         if path in ("/health", "/healthz"):
-            self._json(200, {"ok": True, "version": "5.0.4"})
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "service": "hearth",
+                    "version": VERSION,
+                    "integrations": REGISTRY.status_summary(),
+                },
+            )
             return
 
         if path == "/login":
@@ -302,11 +298,12 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 incident_list_page(
                     status_filter=status_filter,
-                    hermes_base=HERMES_PUBLIC_BASE_URL,
+                    hermes_base=_hermes_public_base(),
                     include_noise=include_noise,
                     hidden_summary=ignored_summary(),
                     flash_message=flash_message,
                     search_query=search_query,
+                    setup_hints=CONFIG.setup_hints(),
                 ),
             )
             return
@@ -319,11 +316,17 @@ class Handler(BaseHTTPRequestHandler):
             self._html(
                 200,
                 settings_page(
-                    NOTIFIER.settings(),
-                    SERVICE.raise_settings_dict(),
+                    CONFIG,
+                    REGISTRY,
                     flash_message=flash_message,
                 ),
             )
+            return
+
+        if path == "/api/settings":
+            if not self._require_api_auth(query):
+                return
+            self._json(200, {"ok": True, "groups": CONFIG.snapshot(), "integrations": REGISTRY.status_summary()})
             return
 
         if path == "/alerts":
@@ -370,8 +373,9 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 incident_detail_page(
                     incident,
-                    hermes_base=HERMES_PUBLIC_BASE_URL,
+                    hermes_base=_hermes_public_base(),
                     auto_investigate=auto_investigate,
+                    hermes_enabled=REGISTRY.hermes().is_enabled(),
                 ),
             )
             return
@@ -594,42 +598,53 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_ui_auth():
                 return
             form = _read_form(self)
-            events = {
-                key: form.get(f"event_{key}") == "on"
-                for key in ("created", "updated", "resolved", "reopened", "manual", "acknowledged", "merged")
-            }
-            NOTIFIER.save_settings(
-                {
-                    "enabled": form.get("enabled") == "on",
-                    "topic": form.get("topic", ""),
-                    "events": events,
-                }
-            )
-            self._redirect("/settings?msg=Notification+settings+saved")
+            section = form.get("section") or "ntfy"
+            updates = _settings_updates_from_form(form, section)
+            CONFIG.save_ui(updates)
+            self._redirect(f"/settings?msg={urllib.parse.quote(section.replace('_', ' ').title() + ' settings saved')}")
             return
 
-        if path == "/settings/display":
+        if path.startswith("/settings/test/"):
             if not self._require_ui_auth():
                 return
-            form = _read_form(self)
-            NOTIFIER.save_settings({"show_noise": form.get("show_noise") == "on"})
-            self._redirect("/settings?msg=Display+settings+saved")
+            integration_id = path[len("/settings/test/") :].strip("/")
+            try:
+                status = REGISTRY.validate(integration_id)
+            except KeyError:
+                self._redirect("/settings?msg=Unknown+integration")
+                return
+            msg = ("OK:+" if status.ok else "Failed:+") + urllib.parse.quote(status.message)
+            self._redirect(f"/settings?msg={msg}")
             return
 
-        if path == "/settings/raise":
-            if not self._require_ui_auth():
+        if path == "/api/settings":
+            if not self._require_api_auth():
                 return
-            form = _read_form(self)
-            SERVICE.save_raise_settings(
-                {
-                    "enabled": form.get("raise_enabled") == "on",
-                    "group_open": form.get("group_open") == "on",
-                    "min_severity": form.get("min_severity", "critical"),
-                    "alertnames": form.get("alertnames", ""),
-                    "label_rules": form.get("label_rules", ""),
-                }
+            payload, err = self._read_json_body()
+            if err:
+                self._json(err, {"error": "bad request"})
+                return
+            updates = (payload or {}).get("updates") or {}
+            if not isinstance(updates, dict):
+                self._json(400, {"error": "updates must be an object"})
+                return
+            changed = CONFIG.save_ui(updates)
+            self._json(200, {"ok": True, "changed": list(changed.keys()), "groups": CONFIG.snapshot()})
+            return
+
+        if path.startswith("/api/settings/test/"):
+            if not self._require_api_auth():
+                return
+            integration_id = path[len("/api/settings/test/") :].strip("/")
+            try:
+                status = REGISTRY.validate(integration_id)
+            except KeyError:
+                self._json(404, {"error": "unknown integration"})
+                return
+            self._json(
+                200 if status.ok else 502,
+                {"ok": status.ok, "message": status.message, "detail": status.detail},
             )
-            self._redirect("/settings?msg=Auto-raise+settings+saved")
             return
 
         if path == "/alerts/raise":
@@ -961,7 +976,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(status if status != 502 else 502, {"error": "hermes webhook failed", "detail": detail})
             return
         if self.command == "GET":
-            base = HERMES_PUBLIC_BASE_URL
+            base = _hermes_public_base()
             if not base:
                 host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
                 if host:
@@ -983,6 +998,63 @@ class Handler(BaseHTTPRequestHandler):
         return iid
 
 
+def _settings_updates_from_form(form: dict[str, str], section: str) -> dict:
+    """Map HTML form posts into dotted ConfigStore keys for one settings section."""
+    updates: dict = {}
+    def set_bool(key: str, form_name: str) -> None:
+        if not CONFIG.is_locked(key):
+            updates[key] = form.get(form_name) == "on"
+
+    def set_text(key: str, form_name: str, *, keep_blank_secret: bool = False) -> None:
+        if form_name not in form or CONFIG.is_locked(key):
+            return
+        val = form.get(form_name, "")
+        if keep_blank_secret and not str(val).strip():
+            return
+        updates[key] = val
+
+    if section == "display":
+        set_bool("display.show_noise", "show_noise")
+        return updates
+    if section == "auto_raise":
+        set_bool("auto_raise.enabled", "raise_enabled")
+        set_bool("auto_raise.group_open", "group_open")
+        set_text("auto_raise.min_severity", "min_severity")
+        set_text("auto_raise.alertnames", "alertnames")
+        set_text("auto_raise.label_rules", "label_rules")
+        return updates
+    if section == "core":
+        set_text("core.incidents_public_base_url", "incidents_public_base_url")
+        set_text("core.grafana_public_url", "grafana_public_url")
+        set_text("core.default_runbook_url", "default_runbook_url")
+        set_text("core.incidents_auth_token", "incidents_auth_token", keep_blank_secret=True)
+        set_text("core.triage_auth_token", "triage_auth_token", keep_blank_secret=True)
+        return updates
+    if section == "prometheus":
+        set_bool("prometheus.enabled", "prometheus_enabled")
+        set_text("prometheus.ignored_alertnames", "ignored_alertnames")
+        set_text("prometheus.ignored_alert_rules", "ignored_alert_rules")
+        return updates
+    if section == "ntfy":
+        set_bool("ntfy.enabled", "enabled")
+        set_text("ntfy.topic", "topic")
+        set_text("ntfy.base_url", "base_url")
+        set_text("ntfy.public_url", "public_url")
+        for key in ("created", "updated", "resolved", "reopened", "manual", "acknowledged", "merged"):
+            set_bool(f"ntfy.events.{key}", f"event_{key}")
+        return updates
+    if section == "hermes":
+        set_bool("hermes.enabled", "hermes_enabled")
+        set_text("hermes.webui_url", "webui_url")
+        set_text("hermes.webui_password", "webui_password", keep_blank_secret=True)
+        set_text("hermes.workspace", "workspace")
+        set_text("hermes.public_base_url", "public_base_url")
+        set_text("hermes.webhook_url", "webhook_url")
+        set_text("hermes.webhook_secret", "webhook_secret", keep_blank_secret=True)
+        return updates
+    return updates
+
+
 def main() -> None:
     INCIDENT_DIR.mkdir(parents=True, exist_ok=True)
     imported = SERVICE.migrate_legacy_json()
@@ -992,7 +1064,7 @@ def main() -> None:
     if fixed:
         print(f"reconciled {fixed} stale open incident(s) (all alerts already resolved)", flush=True)
     server = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), Handler)
-    print(f"homelab-alert-bridge 5.0 listening on :{HTTP_PORT}", flush=True)
+    print(f"hearth {VERSION} listening on :{HTTP_PORT}", flush=True)
     server.serve_forever()
 
 

@@ -2,21 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import urllib.error
 import urllib.request
 from typing import Any
 
 from message_format import incident_ntfy_body, incident_ntfy_priority, incident_ntfy_tags, incident_ntfy_title
-
-NTFY_BASE_URL = os.environ.get(
-    "NTFY_BASE_URL",
-    "http://ntfy.observability.svc.cluster.local:10222",
-).rstrip("/")
-NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "homelab-alerts")
-NTFY_PUBLIC_URL = os.environ.get("NTFY_PUBLIC_URL", "https://ntfy.example.com").rstrip("/")
-HERMES_PUBLIC_BASE_URL = os.environ.get("HERMES_PUBLIC_BASE_URL", "").rstrip("/")
-INCIDENTS_PUBLIC_BASE_URL = os.environ.get("INCIDENTS_PUBLIC_BASE_URL", "").rstrip("/")
 
 
 def _http_header(value: str) -> str:
@@ -24,24 +14,30 @@ def _http_header(value: str) -> str:
     return value.encode("latin-1", errors="replace").decode("latin-1")
 
 
-def _ntfy_post_url(topic: str | None = None) -> str:
-    return f"{NTFY_BASE_URL}/{topic or NTFY_TOPIC}"
-
-
-def _headers_for_incident(incident: dict[str, Any], *, event: str, topic: str | None = None) -> dict[str, str]:
+def _headers_for_incident(
+    incident: dict[str, Any],
+    *,
+    event: str,
+    topic: str,
+    public_url: str,
+    incidents_public_base_url: str,
+) -> dict[str, str]:
     incident_id = str(incident.get("id") or "").strip()
+    public_url = public_url.rstrip("/")
+    incidents_base = incidents_public_base_url.rstrip("/")
 
-    click_url = f"{NTFY_PUBLIC_URL}/{topic or NTFY_TOPIC}"
-    if INCIDENTS_PUBLIC_BASE_URL and incident_id:
-        click_url = f"{INCIDENTS_PUBLIC_BASE_URL}/incidents/{incident_id}"
+    click_url = f"{public_url}/{topic}" if public_url else ""
+    if incidents_base and incident_id:
+        click_url = f"{incidents_base}/incidents/{incident_id}"
 
     headers = {
         "Content-Type": "text/plain; charset=utf-8",
         "X-Title": _http_header(incident_ntfy_title(incident, event=event)),
         "X-Priority": _http_header(incident_ntfy_priority(incident, event=event)),
         "Markdown": "yes",
-        "X-Click": _http_header(click_url),
     }
+    if click_url:
+        headers["X-Click"] = _http_header(click_url)
 
     tags = incident_ntfy_tags(incident, event=event)
     if tags:
@@ -51,13 +47,11 @@ def _headers_for_incident(incident: dict[str, Any], *, event: str, topic: str | 
         headers["X-Sequence-ID"] = incident_id
 
     actions: list[str] = []
-    if INCIDENTS_PUBLIC_BASE_URL and incident_id:
-        view = f"{INCIDENTS_PUBLIC_BASE_URL}/incidents/{incident_id}"
+    if incidents_base and incident_id:
+        view = f"{incidents_base}/incidents/{incident_id}"
         actions.append(f"view, Open incident, {view}, clear=true")
-    if incident_id:
-        if INCIDENTS_PUBLIC_BASE_URL:
-            investigate = f"{INCIDENTS_PUBLIC_BASE_URL.rstrip('/')}/incidents/{incident_id}/investigate"
-            actions.append(f"view, Investigate, {investigate}, clear=true")
+        investigate = f"{incidents_base}/incidents/{incident_id}/investigate"
+        actions.append(f"view, Investigate, {investigate}, clear=true")
     if actions:
         headers["X-Actions"] = _http_header("; ".join(actions))
 
@@ -69,14 +63,37 @@ def publish_incident(
     *,
     event: str = "updated",
     topic: str | None = None,
+    base_url: str | None = None,
+    public_url: str | None = None,
+    incidents_public_base_url: str | None = None,
 ) -> tuple[int, bytes]:
     """POST one incident notification to ntfy."""
+    from config import config_or_none
+
+    cfg = config_or_none()
+    resolved_base = (base_url if base_url is not None else (cfg.get_str("ntfy.base_url") if cfg else "")).rstrip("/")
+    resolved_topic = topic or (cfg.get_str("ntfy.topic") if cfg else "") or "homelab-alerts"
+    resolved_public = public_url if public_url is not None else (cfg.get_str("ntfy.public_url") if cfg else "")
+    resolved_incidents = (
+        incidents_public_base_url
+        if incidents_public_base_url is not None
+        else (cfg.get_str("core.incidents_public_base_url") if cfg else "")
+    )
+    if not resolved_base:
+        raise ValueError("ntfy base URL is not configured")
+
     body = incident_ntfy_body(incident, event=event).encode("utf-8")
     req = urllib.request.Request(
-        _ntfy_post_url(topic),
+        f"{resolved_base}/{resolved_topic}",
         data=body,
         method="POST",
-        headers=_headers_for_incident(incident, event=event, topic=topic),
+        headers=_headers_for_incident(
+            incident,
+            event=event,
+            topic=resolved_topic,
+            public_url=str(resolved_public or ""),
+            incidents_public_base_url=str(resolved_incidents or ""),
+        ),
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:

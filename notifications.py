@@ -1,51 +1,47 @@
-"""Incident-centric ntfy notifications (incident → ntfy)."""
+"""Incident-centric notifications via the ntfy integration."""
 
 from __future__ import annotations
 
-import sys
 from typing import Any
 
-from ntfy_publish import publish_incident as _publish_incident
-from settings import SettingsStore
+from config import ConfigStore, get_config
+from integrations.registry import get_registry
 
 
 class NotificationService:
-    def __init__(self, store: Any, settings_path) -> None:
+    def __init__(self, store: Any, config: ConfigStore | None = None) -> None:
         self.store = store
-        self.settings_store = SettingsStore(settings_path)
+        self._config = config
+
+    @property
+    def config(self) -> ConfigStore:
+        return self._config or get_config()
 
     def settings(self) -> dict[str, Any]:
-        return self.settings_store.load()
+        return self.config.ntfy_settings()
 
     def save_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
-        return self.settings_store.save(settings)
+        updates: dict[str, Any] = {}
+        if "enabled" in settings:
+            updates["ntfy.enabled"] = bool(settings["enabled"])
+        if "topic" in settings and str(settings["topic"]).strip():
+            updates["ntfy.topic"] = str(settings["topic"]).strip()
+        if "show_noise" in settings:
+            updates["display.show_noise"] = bool(settings["show_noise"])
+        if isinstance(settings.get("events"), dict):
+            for key, value in settings["events"].items():
+                updates[f"ntfy.events.{key}"] = bool(value)
+        self.config.save_ui(updates)
+        return self.settings()
 
     def should_notify(self, event: str) -> bool:
-        cfg = self.settings()
-        if not cfg.get("enabled", True):
-            return False
-        events = cfg.get("events") or {}
-        return bool(events.get(event, False))
+        return get_registry().ntfy().should_notify(event)
 
     def notify(self, incident_id: str, event: str) -> tuple[int, bytes] | None:
-        if not self.should_notify(event):
-            return None
         incident = self.store.get_incident(incident_id)
-        if incident is None or incident.get("status") == "merged":
+        if incident is None:
             return None
-        topic = str(self.settings().get("topic") or "").strip()
-        try:
-            status, body = _publish_incident(incident, event=event, topic=topic)
-            if status >= 400:
-                sys.stderr.write(
-                    f"ntfy incident notify failed ({status}) incident={incident_id} event={event}\n"
-                )
-            else:
-                sys.stderr.write(f"ntfy notified incident={incident_id} event={event} topic={topic}\n")
-            return status, body
-        except Exception as exc:
-            sys.stderr.write(f"ntfy notify error incident={incident_id}: {exc}\n")
-            return None
+        return get_registry().ntfy().notify(incident, event)
 
     def notify_many(self, items: list[tuple[str, str]]) -> None:
         """Dedupe by incident id; highest-priority event wins per incident."""

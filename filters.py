@@ -17,11 +17,35 @@ _BUILTIN_RULES: tuple[dict[str, Any], ...] = (
 
 
 def _extra_alertnames() -> set[str]:
+    try:
+        from config import config_or_none
+
+        cfg = config_or_none()
+        if cfg is not None:
+            names = cfg.get("prometheus.ignored_alertnames") or []
+            return {str(n).strip() for n in names if str(n).strip()}
+    except Exception:
+        pass
     raw = os.environ.get("IGNORED_ALERTNAMES", "")
     return {part.strip() for part in raw.split(",") if part.strip()}
 
 
 def _extra_rules() -> list[dict[str, str]]:
+    try:
+        from config import config_or_none
+
+        cfg = config_or_none()
+        if cfg is not None:
+            parsed = cfg.get("prometheus.ignored_alert_rules") or []
+            if isinstance(parsed, list):
+                return [
+                    {str(k): str(v) for k, v in item.items()}
+                    for item in parsed
+                    if isinstance(item, dict)
+                ]
+            return []
+    except Exception:
+        pass
     raw = os.environ.get("IGNORED_ALERT_RULES", "").strip()
     if not raw:
         return []

@@ -266,7 +266,7 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{_esc(title)} · Homelab Incidents</title>
+  <title>{_esc(title)} · Hearth</title>
   <style>
     :root {{
       color-scheme: dark;
@@ -275,11 +275,12 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
       --panel-2: #243044;
       --text: #e7edf5;
       --muted: #9fb0c3;
-      --accent: #4da3ff;
+      --accent: #e8a45c;
       --ok: #3ecf8e;
       --warn: #f5c451;
       --crit: #ff6b6b;
       --border: #2d3b52;
+      --lock: #7a8aa0;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -452,13 +453,60 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
     @media (max-width: 800px) {{
       .incident-row, .incident-row-head {{ grid-template-columns: auto 1fr; }}
     }}
+    .lock-badge {{
+      display: inline-block;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--lock);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 1px 8px;
+      margin-left: 8px;
+      vertical-align: middle;
+    }}
+    .field-locked input, .field-locked textarea, .field-locked select {{
+      opacity: 0.75;
+      cursor: not-allowed;
+    }}
+    .setup-banner {{
+      border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+      background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+    }}
+    .integ-status {{
+      display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px;
+    }}
+    .integ-pill {{
+      font-size: 0.78rem;
+      padding: 2px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+    }}
+    .integ-pill.ok {{ color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }}
+    .integ-pill.bad {{ color: var(--crit); border-color: color-mix(in srgb, var(--crit) 40%, var(--border)); }}
+    .settings-nav {{
+      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;
+    }}
+    .settings-nav a {{
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+    }}
+    .settings-nav a:hover {{ border-color: var(--accent); text-decoration: none; }}
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <h1>Homelab Incidents</h1>
-      <div class="muted">Alert funnel + ticketing</div>
+      <div>
+        <h1>Hearth</h1>
+        <div class="muted">Homelab incident desk</div>
+      </div>
+      <div class="muted">Alerts in · tickets out · agents optional</div>
     </header>
     {body}
   </div>
@@ -484,6 +532,7 @@ def incident_list_page(
     hidden_summary: str = "",
     flash_message: str = "",
     search_query: str = "",
+    setup_hints: list[str] | None = None,
 ) -> str:
     filters = []
     for status in ("", "open", "acknowledged", "resolved"):
@@ -497,6 +546,10 @@ def incident_list_page(
     if hidden_summary and not include_noise:
         hidden_note = f'<p class="muted">Hidden noise alerts: {_esc(hidden_summary)}. Enable <strong>Show noise</strong> in <a href="/settings">Settings</a>.</p>'
     flash = f'<div class="panel flash">{_esc(flash_message)}</div>' if flash_message else ""
+    setup = ""
+    if setup_hints:
+        items = "".join(f"<li>{_esc(h)}</li>" for h in setup_hints)
+        setup = f'<div class="panel setup-banner"><strong>Finish setup</strong><ul style="margin:8px 0 0;padding-left:18px;">{items}</ul><p class="muted" style="margin:10px 0 0;"><a href="/settings">Open Settings → Integrations</a></p></div>'
     return_hidden = f'<input type="hidden" name="return_status" value="{_esc(status_filter)}">'
 
     body = f"""
@@ -507,6 +560,7 @@ def incident_list_page(
       <a class="btn" href="/settings">Settings</a>
     </div>
     {flash}
+    {setup}
     {hidden_note}
     <div class="panel search-box">
       <label for="list-search"><strong>Search</strong> <span class="muted">JQL-style, e.g. <code>status:open severity>=warning title~"flux"</code></span></label>
@@ -711,6 +765,7 @@ def incident_detail_page(
     hermes_base: str,
     message: str = "",
     auto_investigate: bool = False,
+    hermes_enabled: bool = True,
 ) -> str:
     iid = incident["id"]
     status = str(incident.get("status") or "open")
@@ -730,24 +785,32 @@ def incident_detail_page(
     hermes_session_id = str(hermes.get("session_id") or "")
     hermes_status = str(hermes.get("status") or "")
 
-    investigate_btn = (
-        f'<form method="post" action="/incidents/{_esc(iid)}/investigate">'
-        f'<button class="primary" type="submit">Investigate</button></form>'
-    )
-    if hermes_session_id:
-        investigate_btn += (
+    investigate_btn = ""
+    if hermes_enabled:
+        investigate_btn = (
             f'<form method="post" action="/incidents/{_esc(iid)}/investigate">'
-            f'<input type="hidden" name="force" value="1">'
-            f'<button type="submit">New investigation</button></form>'
+            f'<button class="primary" type="submit">Investigate</button></form>'
         )
+        if hermes_session_id:
+            investigate_btn += (
+                f'<form method="post" action="/incidents/{_esc(iid)}/investigate">'
+                f'<input type="hidden" name="force" value="1">'
+                f'<button type="submit">New investigation</button></form>'
+            )
 
     hermes_link = ""
-    if hermes_base and hermes_session_id:
+    if hermes_enabled and hermes_base and hermes_session_id:
         hermes_url = f"{hermes_base.rstrip('/')}/?session_id={quote(hermes_session_id)}"
         hermes_link = f'<a class="btn" href="{_esc(hermes_url)}" target="_blank" rel="noopener">Open in Hermes</a>'
 
     agent_status = ""
-    if hermes_session_id:
+    if not hermes_enabled:
+        agent_status = (
+            '<div id="agent-status" class="agent-status">'
+            'Hermes integration is disabled. Configure it in <a href="/settings">Settings</a>.'
+            "</div>"
+        )
+    elif hermes_session_id:
         agent_status = f'<div id="agent-status" class="agent-status">Status: {_esc(hermes_status or "unknown")}</div>'
     else:
         agent_status = '<div id="agent-status" class="agent-status">No agent session yet — start an investigation.</div>'
@@ -882,54 +945,238 @@ def incident_detail_page(
     return layout(incident.get("title") or iid, body)
 
 
+def _field_lock_badge(field: dict[str, Any]) -> str:
+    if field.get("locked"):
+        env = field.get("env") or "ENV"
+        return f'<span class="lock-badge" title="Set by {_esc(env)}">env</span>'
+    return ""
+
+
+def _bool_toggle(name: str, field: dict[str, Any], *, label: str | None = None, hint: str | None = None) -> str:
+    val = field.get("raw_value")
+    if val is None:
+        val = field.get("value")
+    checked = "checked" if val else ""
+    disabled = "disabled" if field.get("locked") else ""
+    wrap = "field-locked" if field.get("locked") else ""
+    return f"""
+    <label class="event-toggle {wrap}">
+      <input type="checkbox" name="{_esc(name)}" {checked} {disabled}>
+      <span>
+        <strong>{_esc(label or field.get("label") or name)}</strong>{_field_lock_badge(field)}
+        <br><span class="muted">{_esc(hint or field.get("hint") or "")}</span>
+      </span>
+    </label>
+    """
+
+
+def _text_input(
+    name: str,
+    field: dict[str, Any],
+    *,
+    input_name: str | None = None,
+    multiline: bool = False,
+    placeholder: str = "",
+) -> str:
+    locked = bool(field.get("locked"))
+    wrap = "field-locked" if locked else ""
+    disabled = "disabled" if locked else ""
+    value = field.get("value") or ""
+    fname = input_name or name
+    label = field.get("label") or name
+    hint = field.get("hint") or ""
+    if field.get("secret") and locked:
+        value = field.get("value") or "••••"
+    if multiline:
+        control = (
+            f'<textarea name="{_esc(fname)}" placeholder="{_esc(placeholder)}" {disabled}>'
+            f"{_esc(value)}</textarea>"
+        )
+    else:
+        typ = "password" if field.get("secret") and not locked else "text"
+        ph = "leave blank to keep" if field.get("secret") and not locked else placeholder
+        control = (
+            f'<input type="{typ}" name="{_esc(fname)}" value="{_esc("" if field.get("secret") and not locked else value)}" '
+            f'placeholder="{_esc(ph)}" {disabled}>'
+        )
+    return f"""
+    <div class="{wrap}">
+      <label><strong>{_esc(label)}</strong>{_field_lock_badge(field)}</label>
+      <div class="muted" style="margin:4px 0 8px;">{_esc(hint)}</div>
+      {control}
+    </div>
+    """
+
+
 def settings_page(
-    notifications: dict[str, Any],
-    raise_settings: dict[str, Any],
+    config: Any,
+    registry: Any,
     *,
     flash_message: str = "",
 ) -> str:
-    events = notifications.get("events") or {}
     flash = f'<div class="panel flash">{_esc(flash_message)}</div>' if flash_message else ""
+    groups = config.snapshot()
+    statuses = {row["id"]: row for row in registry.status_summary(probe=False)}
+
+    def g(group: str, key: str) -> dict[str, Any]:
+        for item in groups.get(group) or []:
+            if item["key"] == key:
+                return item
+        return {"key": key, "value": "", "locked": False, "label": key, "hint": "", "raw_value": None}
+
+    def _configured(integ_id: str) -> bool:
+        if integ_id == "prometheus":
+            return bool(config.get_bool("prometheus.enabled"))
+        if integ_id == "ntfy":
+            return bool(config.get_str("ntfy.base_url"))
+        if integ_id == "hermes":
+            return bool(config.get_str("hermes.webui_url"))
+        return False
+
+    def status_pills() -> str:
+        pills = []
+        for integ in registry.all():
+            st = statuses.get(integ.meta.id) or {}
+            enabled = bool(st.get("enabled"))
+            configured = _configured(integ.meta.id)
+            if not enabled:
+                cls, label = "", f"{integ.meta.name}: off"
+            elif configured:
+                cls, label = "ok", f"{integ.meta.name}: configured"
+            else:
+                cls, label = "bad", f"{integ.meta.name}: needs config"
+            pills.append(f'<span class="integ-pill {cls}">{_esc(label)}</span>')
+        return f'<div class="integ-status">{"".join(pills)}</div>'
+
+    raise_settings = config.raise_settings()
     alertnames = ", ".join(raise_settings.get("alertnames") or [])
     label_rules = json.dumps(raise_settings.get("label_rules") or [], indent=2)
+    ntfy = config.ntfy_settings()
+    events = ntfy.get("events") or {}
 
     def event_checkbox(name: str, label: str, hint: str) -> str:
+        field = g("ntfy", f"ntfy.events.{name}")
         checked = "checked" if events.get(name, False) else ""
+        disabled = "disabled" if field.get("locked") else ""
+        wrap = "field-locked" if field.get("locked") else ""
         return f"""
-        <label class="event-toggle">
-          <input type="checkbox" name="event_{_esc(name)}" {checked}>
-          <span><strong>{_esc(label)}</strong><br><span class="muted">{_esc(hint)}</span></span>
+        <label class="event-toggle {wrap}">
+          <input type="checkbox" name="event_{_esc(name)}" {checked} {disabled}>
+          <span><strong>{_esc(label)}</strong>{_field_lock_badge(field)}<br><span class="muted">{_esc(hint)}</span></span>
         </label>
         """
+
+    ignored_names = g("prometheus", "prometheus.ignored_alertnames")
+    ignored_rules = g("prometheus", "prometheus.ignored_alert_rules")
 
     body = f"""
     <p><a href="/">Incidents</a> · <a href="/alerts">Alerts inbox</a></p>
     {flash}
-    <div class="panel">
-      <h2 style="margin-top:0;">Display</h2>
-      <form method="post" action="/settings/display" class="grid">
-        <label class="event-toggle">
-          <input type="checkbox" name="show_noise" {"checked" if notifications.get("show_noise") else ""}>
-          <span><strong>Show noise on incident list</strong><br><span class="muted">Include Watchdog, InfoInhibitor, and other filtered alerts in the incidents view</span></span>
-        </label>
-        <div class="actions"><button class="primary" type="submit">Save display</button></div>
+    <div class="settings-nav">
+      <a href="#general">General</a>
+      <a href="#integrations">Integrations</a>
+      <a href="#auto-raise">Auto-raise</a>
+      <a href="#display">Display</a>
+    </div>
+    {status_pills()}
+    <p class="muted">
+      Fields marked <span class="lock-badge">env</span> are set by environment variables and cannot be edited here
+      (Grafana-style). Unset env keys are editable and stored on the data volume.
+    </p>
+
+    <div class="panel" id="general">
+      <h2 style="margin-top:0;">General</h2>
+      <form method="post" action="/settings" class="grid">
+        <input type="hidden" name="section" value="core">
+        {_text_input("incidents_public_base_url", g("core", "core.incidents_public_base_url"), input_name="incidents_public_base_url", placeholder="https://incidents.example.com")}
+        {_text_input("grafana_public_url", g("core", "core.grafana_public_url"), input_name="grafana_public_url")}
+        {_text_input("default_runbook_url", g("core", "core.default_runbook_url"), input_name="default_runbook_url")}
+        {_text_input("incidents_auth_token", g("core", "core.incidents_auth_token"), input_name="incidents_auth_token")}
+        {_text_input("triage_auth_token", g("core", "core.triage_auth_token"), input_name="triage_auth_token")}
+        <div class="actions"><button class="primary" type="submit">Save general</button></div>
       </form>
     </div>
-    <div class="panel">
+
+    <div id="integrations">
+      <div class="panel">
+        <h2 style="margin-top:0;">Prometheus</h2>
+        <p class="muted">{_esc(registry.prometheus().meta.description)}</p>
+        <form method="post" action="/settings" class="grid">
+          <input type="hidden" name="section" value="prometheus">
+          {_bool_toggle("prometheus_enabled", g("prometheus", "prometheus.enabled"))}
+          {_text_input("ignored_alertnames", ignored_names, input_name="ignored_alertnames", placeholder="ExtraAlert, OtherNoise")}
+          {_text_input("ignored_alert_rules", ignored_rules, input_name="ignored_alert_rules", multiline=True, placeholder='[{{"alertname":"Foo"}}]')}
+          <div class="actions">
+            <button class="primary" type="submit">Save Prometheus</button>
+            <button formaction="/settings/test/prometheus" formmethod="post" type="submit">Test connection</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2 style="margin-top:0;">ntfy</h2>
+        <p class="muted">{_esc(registry.ntfy().meta.description)}</p>
+        <form method="post" action="/settings" class="grid">
+          <input type="hidden" name="section" value="ntfy">
+          {_bool_toggle("enabled", g("ntfy", "ntfy.enabled"), label="Notifications enabled")}
+          {_text_input("base_url", g("ntfy", "ntfy.base_url"), input_name="base_url", placeholder="http://ntfy:80")}
+          {_text_input("topic", g("ntfy", "ntfy.topic"), input_name="topic")}
+          {_text_input("public_url", g("ntfy", "ntfy.public_url"), input_name="public_url")}
+          <div class="panel" style="margin:0;">
+            <h3 style="margin-top:0;">Notify on</h3>
+            <div class="grid">
+              {event_checkbox("created", "New incident", "Incident raised from alert(s) or manual create")}
+              {event_checkbox("updated", "Incident updated", "More alerts attached or severity changes")}
+              {event_checkbox("resolved", "Resolved", "All alerts cleared or you resolve from UI")}
+              {event_checkbox("reopened", "Reopened", "Firing alert returns after resolve")}
+              {event_checkbox("manual", "Manual incident", "You create a ticket without alerts")}
+              {event_checkbox("acknowledged", "Acknowledged", "Ack from UI or bulk actions")}
+              {event_checkbox("merged", "Merged", "Incidents combined in UI")}
+            </div>
+          </div>
+          <div class="actions">
+            <button class="primary" type="submit">Save ntfy</button>
+            <button formaction="/settings/test/ntfy" formmethod="post" type="submit">Test connection</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2 style="margin-top:0;">Hermes</h2>
+        <p class="muted">{_esc(registry.hermes().meta.description)}</p>
+        <form method="post" action="/settings" class="grid">
+          <input type="hidden" name="section" value="hermes">
+          {_bool_toggle("hermes_enabled", g("hermes", "hermes.enabled"))}
+          {_text_input("webui_url", g("hermes", "hermes.webui_url"), input_name="webui_url")}
+          {_text_input("webui_password", g("hermes", "hermes.webui_password"), input_name="webui_password")}
+          {_text_input("workspace", g("hermes", "hermes.workspace"), input_name="workspace")}
+          {_text_input("public_base_url", g("hermes", "hermes.public_base_url"), input_name="public_base_url")}
+          <details>
+            <summary class="muted" style="cursor:pointer;">Advanced — legacy webhook triage</summary>
+            <div class="grid" style="margin-top:12px;">
+              {_text_input("webhook_url", g("hermes", "hermes.webhook_url"), input_name="webhook_url")}
+              {_text_input("webhook_secret", g("hermes", "hermes.webhook_secret"), input_name="webhook_secret")}
+            </div>
+          </details>
+          <div class="actions">
+            <button class="primary" type="submit">Save Hermes</button>
+            <button formaction="/settings/test/hermes" formmethod="post" type="submit">Test connection</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="panel" id="auto-raise">
       <h2 style="margin-top:0;">Auto-raise rules</h2>
       <p class="muted">
         Alertmanager webhooks land in the <strong>alerts inbox</strong> first.
         Matching rules automatically raise an incident and attach the alert.
       </p>
-      <form method="post" action="/settings/raise" class="grid">
-        <label class="event-toggle">
-          <input type="checkbox" name="raise_enabled" {"checked" if raise_settings.get("enabled", True) else ""}>
-          <span><strong>Auto-raise enabled</strong></span>
-        </label>
-        <label class="event-toggle">
-          <input type="checkbox" name="group_open" {"checked" if raise_settings.get("group_open", True) else ""}>
-          <span><strong>Group into open incidents</strong><br><span class="muted">Attach to an open incident with the same alertname + namespace</span></span>
-        </label>
+      <form method="post" action="/settings" class="grid">
+        <input type="hidden" name="section" value="auto_raise">
+        {_bool_toggle("raise_enabled", g("auto_raise", "auto_raise.enabled"), label="Auto-raise enabled")}
+        {_bool_toggle("group_open", g("auto_raise", "auto_raise.group_open"), label="Group into open incidents")}
+        <label><strong>Minimum severity</strong></label>
         <select name="min_severity">
           {''.join(f'<option value="{_esc(s)}" {"selected" if raise_settings.get("min_severity")==s else ""}>{_esc(s)} and above</option>' for s in ("critical", "warning", "info", "unknown"))}
         </select>
@@ -938,30 +1185,13 @@ def settings_page(
         <div class="actions"><button class="primary" type="submit">Save auto-raise</button></div>
       </form>
     </div>
-    <div class="panel">
-      <h2 style="margin-top:0;">Notification settings</h2>
-      <p class="muted">When an incident is raised or updated, notifications flow <strong>incident → ntfy</strong>.</p>
+
+    <div class="panel" id="display">
+      <h2 style="margin-top:0;">Display</h2>
       <form method="post" action="/settings" class="grid">
-        <label class="event-toggle">
-          <input type="checkbox" name="enabled" {"checked" if notifications.get("enabled", True) else ""}>
-          <span><strong>Notifications enabled</strong><br><span class="muted">Master switch for all ntfy posts</span></span>
-        </label>
-        <input name="topic" placeholder="ntfy topic" value="{_esc(notifications.get('topic') or '')}" required>
-        <div class="panel" style="margin:0;">
-          <h3 style="margin-top:0;">Notify on</h3>
-          <div class="grid">
-            {event_checkbox("created", "New incident", "Incident raised from alert(s) or manual create")}
-            {event_checkbox("updated", "Incident updated", "More alerts attached or severity changes")}
-            {event_checkbox("resolved", "Resolved", "All alerts cleared or you resolve from UI")}
-            {event_checkbox("reopened", "Reopened", "Firing alert returns after resolve")}
-            {event_checkbox("manual", "Manual incident", "You create a ticket without alerts")}
-            {event_checkbox("acknowledged", "Acknowledged", "Ack from UI or bulk actions")}
-            {event_checkbox("merged", "Merged", "Incidents combined in UI")}
-          </div>
-        </div>
-        <div class="actions">
-          <button class="primary" type="submit">Save notifications</button>
-        </div>
+        <input type="hidden" name="section" value="display">
+        {_bool_toggle("show_noise", g("display", "display.show_noise"))}
+        <div class="actions"><button class="primary" type="submit">Save display</button></div>
       </form>
     </div>
     <style>
@@ -974,6 +1204,7 @@ def settings_page(
       }}
       .event-toggle:last-child {{ border-bottom: 0; }}
       .event-toggle input {{ width: auto; margin-top: 4px; }}
+      details {{ border-top: 1px solid var(--border); padding-top: 12px; }}
     </style>
     """
     return layout("Settings", body)

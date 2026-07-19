@@ -4,18 +4,10 @@ from __future__ import annotations
 
 import http.cookiejar
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Iterator
-
-HERMES_WEBUI_URL = os.environ.get(
-    "HERMES_WEBUI_URL",
-    "http://hermes-oncall-app-template.ai.svc.cluster.local:8787",
-).rstrip("/")
-HERMES_WEBUI_PASSWORD = os.environ.get("HERMES_WEBUI_PASSWORD", "")
-HERMES_DEFAULT_WORKSPACE = os.environ.get("HERMES_WEBUI_DEFAULT_WORKSPACE", "/workspace")
 
 
 class HermesError(RuntimeError):
@@ -26,18 +18,33 @@ class HermesError(RuntimeError):
 
 
 class HermesClient:
-    def __init__(self) -> None:
-        self.base = HERMES_WEBUI_URL
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        password: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
+        from config import config_or_none
+
+        cfg = config_or_none()
+        self.base = (base_url if base_url is not None else (cfg.get_str("hermes.webui_url") if cfg else "")).rstrip("/")
+        self.password = password if password is not None else (cfg.get_str("hermes.webui_password") if cfg else "")
+        self.workspace = workspace if workspace is not None else (
+            (cfg.get_str("hermes.workspace") if cfg else "") or "/workspace"
+        )
+        if not self.base:
+            raise HermesError("Hermes WebUI URL is not configured")
         self._jar = http.cookiejar.CookieJar()
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self._jar))
-        if HERMES_WEBUI_PASSWORD:
+        if self.password:
             self._login()
 
     def _login(self) -> None:
         self._json_request(
             "POST",
             "/api/auth/login",
-            {"password": HERMES_WEBUI_PASSWORD},
+            {"password": self.password},
         )
 
     def _json_request(
@@ -99,7 +106,7 @@ class HermesClient:
         payload: dict[str, Any] = {
             "session_id": session_id,
             "message": message,
-            "workspace": workspace or HERMES_DEFAULT_WORKSPACE,
+            "workspace": workspace or self.workspace,
         }
         data = self._json_request("POST", "/api/chat/start", payload, timeout=30)
         stream_id = str(data.get("stream_id") or "").strip()
