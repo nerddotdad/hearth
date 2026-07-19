@@ -21,6 +21,19 @@ def _env_raw(name: str) -> str | None:
     return value
 
 
+def _env_raw_for_field(key: str, primary_env: str | None) -> tuple[str | None, str | None]:
+    """Return (raw_value, env_name) for a field, honoring aliases."""
+    candidates: list[str] = []
+    if primary_env:
+        candidates.append(primary_env)
+    candidates.extend(ENV_ALIASES.get(key) or ())
+    for name in candidates:
+        raw = _env_raw(name)
+        if raw is not None:
+            return raw, name
+    return None, None
+
+
 def _parse_bool(raw: str) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
@@ -231,15 +244,24 @@ FIELD_DEFS: list[FieldDef] = [
     FieldDef("ntfy.events.manual", None, True, "bool", "ntfy", "Notify: manual incident"),
     FieldDef("ntfy.events.acknowledged", None, False, "bool", "ntfy", "Notify: acknowledged"),
     FieldDef("ntfy.events.merged", None, False, "bool", "ntfy", "Notify: merged"),
-    # Hermes
+    # AIOps / Hermes
     FieldDef(
         "hermes.enabled",
-        "HERMES_ENABLED",
+        "HEARTH_AIOPS_ENABLED",
         True,
         "bool",
         "hermes",
-        "Enabled",
-        "AI investigation via Hermes WebUI",
+        "Enable AIOps",
+        "Master switch for Hermes investigation + management (alias env: HERMES_ENABLED)",
+    ),
+    FieldDef(
+        "hermes.auto_triage",
+        "HERMES_AUTO_TRIAGE",
+        False,
+        "bool",
+        "hermes",
+        "Auto-triage",
+        "When an incident is created, automatically start a Hermes investigation",
     ),
     FieldDef(
         "hermes.webui_url",
@@ -295,6 +317,11 @@ FIELD_DEFS: list[FieldDef] = [
         secret=True,
     ),
 ]
+
+# Env aliases: primary FieldDef.env plus these extras also lock/source the field.
+ENV_ALIASES: dict[str, tuple[str, ...]] = {
+    "hermes.enabled": ("HERMES_ENABLED",),
+}
 
 FIELD_BY_KEY: dict[str, FieldDef] = {f.key: f for f in FIELD_DEFS}
 
@@ -394,7 +421,8 @@ class ConfigStore:
         spec = FIELD_BY_KEY.get(key)
         if not spec:
             return "default"
-        if spec.env and _env_raw(spec.env) is not None:
+        env_val, _ = _env_raw_for_field(key, spec.env)
+        if env_val is not None:
             return "env"
         if _get_nested(self._ui, key) is not None:
             return "ui"
@@ -404,10 +432,9 @@ class ConfigStore:
         spec = FIELD_BY_KEY.get(key)
         if not spec:
             return None
-        if spec.env:
-            env_val = _env_raw(spec.env)
-            if env_val is not None:
-                return _coerce(spec.field_type, env_val)
+        env_val, _ = _env_raw_for_field(key, spec.env)
+        if env_val is not None:
+            return _coerce(spec.field_type, env_val)
         ui_val = _get_nested(self._ui, key)
         if ui_val is not None:
             return _coerce(spec.field_type, ui_val)
@@ -426,6 +453,7 @@ class ConfigStore:
         spec = FIELD_BY_KEY[key]
         value = self.get(key)
         source = self.field_source(key)
+        _, env_name = _env_raw_for_field(key, spec.env)
         display = value
         if spec.secret or spec.field_type == "secret":
             raw = str(value or "")
@@ -441,12 +469,29 @@ class ConfigStore:
             "group": spec.group,
             "type": spec.field_type,
             "secret": bool(spec.secret or spec.field_type == "secret"),
-            "env": spec.env,
+            "env": env_name or spec.env,
             "source": source,
             "locked": source == "env",
             "value": display,
             "raw_value": value if not (spec.secret or spec.field_type == "secret") else None,
         }
+
+    def hydrate_aiops_from_env(self) -> dict[str, str]:
+        """Discover Hermes/AIOps env keys present at enable time (for UI messaging)."""
+        found: dict[str, str] = {}
+        for spec in FIELD_DEFS:
+            if spec.group != "hermes":
+                continue
+            raw, env_name = _env_raw_for_field(spec.key, spec.env)
+            if raw is not None and env_name:
+                found[spec.key] = env_name
+        return found
+
+    def aiops_enabled(self) -> bool:
+        return self.get_bool("hermes.enabled")
+
+    def auto_triage_enabled(self) -> bool:
+        return self.aiops_enabled() and self.get_bool("hermes.auto_triage")
 
     def snapshot(self, *, mask_secrets: bool = True) -> dict[str, list[dict[str, Any]]]:
         groups: dict[str, list[dict[str, Any]]] = {}
@@ -516,8 +561,8 @@ class ConfigStore:
             hints.append("Prometheus ingest is disabled — enable it under Settings → Integrations.")
         if self.get_bool("ntfy.enabled") and not self.get_str("ntfy.base_url"):
             hints.append("Connect ntfy under Settings → Integrations to receive push notifications.")
-        if self.get_bool("hermes.enabled") and not self.get_str("hermes.webui_url"):
-            hints.append("Connect Hermes under Settings → Integrations to run AI investigations.")
+        if self.aiops_enabled() and not self.get_str("hermes.webui_url"):
+            hints.append("AIOps is enabled but Hermes WebUI URL is missing — fix Settings → AIOps.")
         return hints
 
 

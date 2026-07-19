@@ -497,6 +497,24 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
       text-decoration: none;
     }}
     .settings-nav a:hover {{ border-color: var(--accent); text-decoration: none; }}
+    .error-banner {{
+      border-color: color-mix(in srgb, var(--crit) 55%, var(--border));
+      background: color-mix(in srgb, var(--crit) 10%, var(--panel));
+      color: var(--crit);
+    }}
+    .error-banner ul {{ margin: 8px 0 0; padding-left: 18px; }}
+    .error-banner li {{ margin: 4px 0; }}
+    .ok-banner {{
+      border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+      color: var(--ok);
+    }}
+    .skill-row {{
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }}
+    .skill-row:last-child {{ border-bottom: 0; }}
   </style>
 </head>
 <body>
@@ -533,6 +551,7 @@ def incident_list_page(
     flash_message: str = "",
     search_query: str = "",
     setup_hints: list[str] | None = None,
+    aiops_errors: list[str] | None = None,
 ) -> str:
     filters = []
     for status in ("", "open", "acknowledged", "resolved"):
@@ -549,7 +568,15 @@ def incident_list_page(
     setup = ""
     if setup_hints:
         items = "".join(f"<li>{_esc(h)}</li>" for h in setup_hints)
-        setup = f'<div class="panel setup-banner"><strong>Finish setup</strong><ul style="margin:8px 0 0;padding-left:18px;">{items}</ul><p class="muted" style="margin:10px 0 0;"><a href="/settings">Open Settings → Integrations</a></p></div>'
+        setup = f'<div class="panel setup-banner"><strong>Finish setup</strong><ul style="margin:8px 0 0;padding-left:18px;">{items}</ul><p class="muted" style="margin:10px 0 0;"><a href="/settings">Open Settings</a></p></div>'
+    aiops_banner = ""
+    if aiops_errors:
+        items = "".join(f"<li>{_esc(e)}</li>" for e in aiops_errors)
+        aiops_banner = (
+            f'<div class="panel error-banner"><strong>AIOps configuration error</strong>'
+            f"<ul>{items}</ul>"
+            f'<p style="margin:10px 0 0;"><a href="/settings#aiops">Fix in Settings → AIOps</a></p></div>'
+        )
     return_hidden = f'<input type="hidden" name="return_status" value="{_esc(status_filter)}">'
 
     body = f"""
@@ -560,6 +587,7 @@ def incident_list_page(
       <a class="btn" href="/settings">Settings</a>
     </div>
     {flash}
+    {aiops_banner}
     {setup}
     {hidden_note}
     <div class="panel search-box">
@@ -1017,6 +1045,23 @@ def settings_page(
     flash = f'<div class="panel flash">{_esc(flash_message)}</div>' if flash_message else ""
     groups = config.snapshot()
     statuses = {row["id"]: row for row in registry.status_summary(probe=False)}
+    hermes = registry.hermes()
+    aiops_on = bool(config.aiops_enabled())
+    aiops_errors = hermes.connection_errors() if aiops_on else []
+    aiops_connected = aiops_on and not aiops_errors
+    env_found = config.hydrate_aiops_from_env() if aiops_on else {}
+    skills: list[dict[str, Any]] = []
+    memory: dict[str, Any] = {}
+    admin_error = ""
+    if aiops_connected:
+        try:
+            client = hermes.client()
+            skills = client.list_skills()
+            memory = client.get_memory()
+        except Exception as exc:
+            admin_error = str(exc)
+            aiops_connected = False
+            aiops_errors = aiops_errors + [admin_error]
 
     def g(group: str, key: str) -> dict[str, Any]:
         for item in groups.get(group) or []:
@@ -1030,7 +1075,7 @@ def settings_page(
         if integ_id == "ntfy":
             return bool(config.get_str("ntfy.base_url"))
         if integ_id == "hermes":
-            return bool(config.get_str("hermes.webui_url"))
+            return hermes.is_connected()
         return False
 
     def status_pills() -> str:
@@ -1039,20 +1084,109 @@ def settings_page(
             st = statuses.get(integ.meta.id) or {}
             enabled = bool(st.get("enabled"))
             configured = _configured(integ.meta.id)
+            name = "AIOps" if integ.meta.id == "hermes" else integ.meta.name
             if not enabled:
-                cls, label = "", f"{integ.meta.name}: off"
+                cls, label = "", f"{name}: off"
             elif configured:
-                cls, label = "ok", f"{integ.meta.name}: configured"
+                cls, label = "ok", f"{name}: connected"
             else:
-                cls, label = "bad", f"{integ.meta.name}: needs config"
+                cls, label = "bad", f"{name}: needs config"
             pills.append(f'<span class="integ-pill {cls}">{_esc(label)}</span>')
         return f'<div class="integ-status">{"".join(pills)}</div>'
+
+    def _skills_panel() -> str:
+        if not aiops_on:
+            return ""
+        if not aiops_connected:
+            return ""
+        rows = []
+        for skill in skills:
+            name = str(skill.get("name") or "")
+            desc = str(skill.get("description") or skill.get("category") or "")
+            enabled = skill.get("enabled", True)
+            toggle_to = "false" if enabled else "true"
+            toggle_label = "Disable" if enabled else "Enable"
+            rows.append(
+                f"""
+                <div class="skill-row">
+                  <div>
+                    <strong>{_esc(name)}</strong>
+                    <span class="badge {"status-resolved" if enabled else "status-merged"}">{"on" if enabled else "off"}</span>
+                    <div class="muted">{_esc(desc)}</div>
+                  </div>
+                  <div class="actions">
+                    <form method="post" action="/settings/aiops/skills/toggle" style="display:inline;">
+                      <input type="hidden" name="name" value="{_esc(name)}">
+                      <input type="hidden" name="enabled" value="{toggle_to}">
+                      <button type="submit">{_esc(toggle_label)}</button>
+                    </form>
+                    <form method="post" action="/settings/aiops/skills/delete" style="display:inline;" onsubmit="return confirm('Delete skill {_esc(name)}?');">
+                      <input type="hidden" name="name" value="{_esc(name)}">
+                      <button type="submit">Delete</button>
+                    </form>
+                  </div>
+                </div>
+                """
+            )
+        skill_list = "\n".join(rows) if rows else '<p class="muted">No skills found on Hermes yet.</p>'
+        return f"""
+        <div class="panel" id="aiops-skills">
+          <h3 style="margin-top:0;">Skills</h3>
+          <p class="muted">Managed on Hermes via API — create, toggle, or delete from Hearth.</p>
+          {skill_list}
+          <h4>Create / update skill</h4>
+          <form method="post" action="/settings/aiops/skills/save" class="grid">
+            <input name="name" placeholder="skill-name" required>
+            <input name="category" placeholder="category (optional)">
+            <textarea name="content" placeholder="SKILL.md content" rows="8" required></textarea>
+            <div class="actions"><button class="primary" type="submit">Save skill</button></div>
+          </form>
+        </div>
+        """
+
+    def _memory_panel() -> str:
+        if not aiops_on or not aiops_connected:
+            return ""
+        sections = (
+            ("soul", "SOUL.md", memory.get("soul") or ""),
+            ("user", "USER.md", memory.get("user") or ""),
+            ("memory", "MEMORY.md", memory.get("memory") or ""),
+        )
+        blocks = []
+        for key, label, content in sections:
+            blocks.append(
+                f"""
+                <form method="post" action="/settings/aiops/memory" class="grid" style="margin-bottom:16px;">
+                  <input type="hidden" name="memory_section" value="{_esc(key)}">
+                  <label><strong>{_esc(label)}</strong></label>
+                  <textarea name="content" rows="10">{_esc(content)}</textarea>
+                  <div class="actions"><button class="primary" type="submit">Save {_esc(label)}</button></div>
+                </form>
+                """
+            )
+        return f"""
+        <div class="panel" id="aiops-memory">
+          <h3 style="margin-top:0;">Memory &amp; persona</h3>
+          <p class="muted">Edit Hermes SOUL / USER / MEMORY files through the WebUI API.</p>
+          {''.join(blocks)}
+        </div>
+        """
 
     raise_settings = config.raise_settings()
     alertnames = ", ".join(raise_settings.get("alertnames") or [])
     label_rules = json.dumps(raise_settings.get("label_rules") or [], indent=2)
     ntfy = config.ntfy_settings()
     events = ntfy.get("events") or {}
+
+    aiops_status_html = ""
+    if aiops_on and aiops_errors:
+        items = "".join(f"<li>{_esc(e)}</li>" for e in aiops_errors)
+        aiops_status_html = f'<div class="panel error-banner"><strong>AIOps is enabled but not ready</strong><ul>{items}</ul></div>'
+    elif aiops_on and aiops_connected:
+        env_note = ""
+        if env_found:
+            env_note = f'<p class="muted">Env applied: {_esc(", ".join(sorted(env_found.values())))}</p>'
+        aiops_status_html = f'<div class="panel ok-banner"><strong>AIOps connected</strong>{env_note}</div>'
 
     def event_checkbox(name: str, label: str, hint: str) -> str:
         field = g("ntfy", f"ntfy.events.{name}")
@@ -1075,6 +1209,7 @@ def settings_page(
     <div class="settings-nav">
       <a href="#general">General</a>
       <a href="#integrations">Integrations</a>
+      <a href="#aiops">AIOps</a>
       <a href="#auto-raise">Auto-raise</a>
       <a href="#display">Display</a>
     </div>
@@ -1141,30 +1276,39 @@ def settings_page(
         </form>
       </div>
 
-      <div class="panel">
-        <h2 style="margin-top:0;">Hermes</h2>
-        <p class="muted">{_esc(registry.hermes().meta.description)}</p>
-        <form method="post" action="/settings" class="grid">
-          <input type="hidden" name="section" value="hermes">
-          {_bool_toggle("hermes_enabled", g("hermes", "hermes.enabled"))}
-          {_text_input("webui_url", g("hermes", "hermes.webui_url"), input_name="webui_url")}
-          {_text_input("webui_password", g("hermes", "hermes.webui_password"), input_name="webui_password")}
-          {_text_input("workspace", g("hermes", "hermes.workspace"), input_name="workspace")}
-          {_text_input("public_base_url", g("hermes", "hermes.public_base_url"), input_name="public_base_url")}
-          <details>
-            <summary class="muted" style="cursor:pointer;">Advanced — legacy webhook triage</summary>
-            <div class="grid" style="margin-top:12px;">
-              {_text_input("webhook_url", g("hermes", "hermes.webhook_url"), input_name="webhook_url")}
-              {_text_input("webhook_secret", g("hermes", "hermes.webhook_secret"), input_name="webhook_secret")}
-            </div>
-          </details>
-          <div class="actions">
-            <button class="primary" type="submit">Save Hermes</button>
-            <button formaction="/settings/test/hermes" formmethod="post" type="submit">Test connection</button>
-          </div>
-        </form>
-      </div>
     </div>
+
+    <div class="panel" id="aiops">
+      <h2 style="margin-top:0;">AIOps</h2>
+      <p class="muted">
+        Optional Hermes module for investigations, skills, and memory.
+        When enabled, Hearth reads Hermes env vars (<code>HERMES_*</code> / <code>HEARTH_AIOPS_ENABLED</code>)
+        and keeps those fields locked.
+      </p>
+      {aiops_status_html}
+      <form method="post" action="/settings" class="grid">
+        <input type="hidden" name="section" value="aiops">
+        {_bool_toggle("hermes_enabled", g("hermes", "hermes.enabled"), label="Enable AIOps")}
+        {_bool_toggle("auto_triage", g("hermes", "hermes.auto_triage"), label="Auto-triage new incidents", hint="Start a Hermes investigation automatically when an incident is created")}
+        {_text_input("webui_url", g("hermes", "hermes.webui_url"), input_name="webui_url")}
+        {_text_input("webui_password", g("hermes", "hermes.webui_password"), input_name="webui_password")}
+        {_text_input("workspace", g("hermes", "hermes.workspace"), input_name="workspace")}
+        {_text_input("public_base_url", g("hermes", "hermes.public_base_url"), input_name="public_base_url")}
+        <details>
+          <summary class="muted" style="cursor:pointer;">Advanced — legacy webhook triage</summary>
+          <div class="grid" style="margin-top:12px;">
+            {_text_input("webhook_url", g("hermes", "hermes.webhook_url"), input_name="webhook_url")}
+            {_text_input("webhook_secret", g("hermes", "hermes.webhook_secret"), input_name="webhook_secret")}
+          </div>
+        </details>
+        <div class="actions">
+          <button class="primary" type="submit">Save AIOps</button>
+          <button formaction="/settings/test/hermes" formmethod="post" type="submit">Test connection</button>
+        </div>
+      </form>
+    </div>
+    {_skills_panel()}
+    {_memory_panel()}
 
     <div class="panel" id="auto-raise">
       <h2 style="margin-top:0;">Auto-raise rules</h2>

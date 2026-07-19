@@ -1,4 +1,4 @@
-"""HTTP client for Hermes WebUI (in-cluster session + chat APIs)."""
+"""HTTP client for Hermes WebUI (sessions, chat, skills, memory)."""
 
 from __future__ import annotations
 
@@ -47,14 +47,14 @@ class HermesClient:
             {"password": self.password},
         )
 
-    def _json_request(
+    def _request_raw(
         self,
         method: str,
         path: str,
         payload: dict[str, Any] | None = None,
         *,
         timeout: int = 120,
-    ) -> dict[str, Any]:
+    ) -> Any:
         url = f"{self.base}{path}"
         data = None
         headers = {"Accept": "application/json"}
@@ -77,9 +77,19 @@ class HermesClient:
         if not raw.strip():
             return {}
         try:
-            parsed = json.loads(raw)
+            return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise HermesError(f"Hermes returned invalid JSON from {path}") from exc
+
+    def _json_request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: int = 120,
+    ) -> dict[str, Any]:
+        parsed = self._request_raw(method, path, payload, timeout=timeout)
         if not isinstance(parsed, dict):
             raise HermesError(f"Hermes returned unexpected payload from {path}")
         return parsed
@@ -136,3 +146,34 @@ class HermesClient:
                 yield chunk
         finally:
             resp.close()
+
+    # ── Admin: skills / memory ─────────────────────────────────────────────
+
+    def list_skills(self) -> list[dict[str, Any]]:
+        data = self._json_request("GET", "/api/skills")
+        skills = data.get("skills") or []
+        return [s for s in skills if isinstance(s, dict)]
+
+    def get_skill_content(self, name: str) -> dict[str, Any]:
+        query = urllib.parse.urlencode({"name": name})
+        return self._json_request("GET", f"/api/skills/content?{query}")
+
+    def save_skill(self, name: str, content: str, *, category: str = "") -> dict[str, Any]:
+        payload: dict[str, Any] = {"name": name, "content": content}
+        if category:
+            payload["category"] = category
+        return self._json_request("POST", "/api/skills/save", payload)
+
+    def delete_skill(self, name: str) -> dict[str, Any]:
+        return self._json_request("POST", "/api/skills/delete", {"name": name})
+
+    def toggle_skill(self, name: str, enabled: bool) -> dict[str, Any]:
+        return self._json_request("POST", "/api/skills/toggle", {"name": name, "enabled": enabled})
+
+    def get_memory(self) -> dict[str, Any]:
+        return self._json_request("GET", "/api/memory")
+
+    def write_memory(self, section: str, content: str) -> dict[str, Any]:
+        if section not in ("memory", "user", "soul"):
+            raise HermesError('section must be "memory", "user", or "soul"')
+        return self._json_request("POST", "/api/memory/write", {"section": section, "content": content})

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -115,6 +116,25 @@ def _summarize_hook_payload(payload: dict) -> str:
     return f"status={payload.get('status')} count={len(alerts)} [{', '.join(parts)}{suffix}]"
 
 
+def _maybe_auto_triage(incident_id: str, event: str) -> None:
+    REGISTRY.hermes().maybe_auto_triage(
+        incident_id,
+        event=event,
+        investigate=lambda iid: SERVICE.investigate(iid, force=False, actor="auto_triage"),
+    )
+
+
+def _notify_and_triage(incident_id: str, event: str) -> None:
+    NOTIFIER.notify(incident_id, event)
+    _maybe_auto_triage(incident_id, event)
+
+
+def _notify_many_and_triage(events: list[tuple[str, str]]) -> None:
+    NOTIFIER.notify_many(events)
+    for incident_id, event in events:
+        _maybe_auto_triage(incident_id, event)
+
+
 def _handle_alertmanager_hook(payload: dict) -> tuple[int, bytes]:
     sys.stderr.write(f"hook received: {_summarize_hook_payload(payload)}\n")
 
@@ -123,7 +143,7 @@ def _handle_alertmanager_hook(payload: dict) -> tuple[int, bytes]:
         if events:
             ids = ", ".join(sorted({iid for iid, _ in events}))
             sys.stderr.write(f"incidents touched: {ids}\n")
-            NOTIFIER.notify_many(events)
+            _notify_many_and_triage(events)
         return events
 
     return REGISTRY.prometheus().handle_webhook(payload, ingest)
@@ -304,6 +324,7 @@ class Handler(BaseHTTPRequestHandler):
                     flash_message=flash_message,
                     search_query=search_query,
                     setup_hints=CONFIG.setup_hints(),
+                    aiops_errors=REGISTRY.hermes().connection_errors() if CONFIG.aiops_enabled() else None,
                 ),
             )
             return
@@ -327,6 +348,48 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_api_auth(query):
                 return
             self._json(200, {"ok": True, "groups": CONFIG.snapshot(), "integrations": REGISTRY.status_summary()})
+            return
+
+        if path == "/api/aiops/status":
+            if not self._require_api_auth(query):
+                return
+            hermes = REGISTRY.hermes()
+            errors = hermes.connection_errors()
+            self._json(
+                200,
+                {
+                    "ok": not errors,
+                    "enabled": CONFIG.aiops_enabled(),
+                    "auto_triage": CONFIG.auto_triage_enabled(),
+                    "connected": hermes.is_connected(),
+                    "errors": errors,
+                    "env_keys": CONFIG.hydrate_aiops_from_env() if CONFIG.aiops_enabled() else {},
+                },
+            )
+            return
+
+        if path == "/api/aiops/skills":
+            if not self._require_api_auth(query):
+                return
+            if not REGISTRY.hermes().is_connected():
+                self._json(503, {"error": "AIOps not connected", "errors": REGISTRY.hermes().connection_errors()})
+                return
+            try:
+                self._json(200, {"ok": True, "skills": REGISTRY.hermes().client().list_skills()})
+            except HermesError as exc:
+                self._json(502, {"error": str(exc), "detail": exc.detail})
+            return
+
+        if path == "/api/aiops/memory":
+            if not self._require_api_auth(query):
+                return
+            if not REGISTRY.hermes().is_connected():
+                self._json(503, {"error": "AIOps not connected", "errors": REGISTRY.hermes().connection_errors()})
+                return
+            try:
+                self._json(200, {"ok": True, "memory": REGISTRY.hermes().client().get_memory()})
+            except HermesError as exc:
+                self._json(502, {"error": str(exc), "detail": exc.detail})
             return
 
         if path == "/alerts":
@@ -590,7 +653,7 @@ class Handler(BaseHTTPRequestHandler):
             if incident is None:
                 self._html(400, create_incident_page(error="Title is required"))
                 return
-            NOTIFIER.notify(incident["id"], "manual")
+            _notify_and_triage(incident["id"], "manual")
             self._redirect(f"/incidents/{incident['id']}")
             return
 
@@ -600,8 +663,18 @@ class Handler(BaseHTTPRequestHandler):
             form = _read_form(self)
             section = form.get("section") or "ntfy"
             updates = _settings_updates_from_form(form, section)
+            was_aiops = CONFIG.aiops_enabled()
             CONFIG.save_ui(updates)
-            self._redirect(f"/settings?msg={urllib.parse.quote(section.replace('_', ' ').title() + ' settings saved')}")
+            if section in ("hermes", "aiops") and CONFIG.aiops_enabled() and not was_aiops:
+                found = CONFIG.hydrate_aiops_from_env()
+                if found:
+                    keys = ", ".join(sorted(found.values()))
+                    self._redirect(
+                        f"/settings?msg={urllib.parse.quote('AIOps enabled — applied env: ' + keys)}#aiops"
+                    )
+                    return
+            label = "AIOps" if section in ("hermes", "aiops") else section.replace("_", " ").title()
+            self._redirect(f"/settings?msg={urllib.parse.quote(label + ' settings saved')}#aiops" if section in ("hermes", "aiops") else f"/settings?msg={urllib.parse.quote(label + ' settings saved')}")
             return
 
         if path.startswith("/settings/test/"):
@@ -614,7 +687,58 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect("/settings?msg=Unknown+integration")
                 return
             msg = ("OK:+" if status.ok else "Failed:+") + urllib.parse.quote(status.message)
-            self._redirect(f"/settings?msg={msg}")
+            anchor = "#aiops" if integration_id == "hermes" else ""
+            self._redirect(f"/settings?msg={msg}{anchor}")
+            return
+
+        if path == "/settings/aiops/skills/save":
+            if not self._require_ui_auth():
+                return
+            form = _read_form(self)
+            try:
+                REGISTRY.hermes().client().save_skill(
+                    form.get("name", ""),
+                    form.get("content", ""),
+                    category=form.get("category", ""),
+                )
+                self._redirect("/settings?msg=Skill+saved#aiops-skills")
+            except HermesError as exc:
+                self._redirect(f"/settings?msg={urllib.parse.quote('Skill save failed: ' + str(exc))}#aiops-skills")
+            return
+
+        if path == "/settings/aiops/skills/delete":
+            if not self._require_ui_auth():
+                return
+            form = _read_form(self)
+            try:
+                REGISTRY.hermes().client().delete_skill(form.get("name", ""))
+                self._redirect("/settings?msg=Skill+deleted#aiops-skills")
+            except HermesError as exc:
+                self._redirect(f"/settings?msg={urllib.parse.quote('Skill delete failed: ' + str(exc))}#aiops-skills")
+            return
+
+        if path == "/settings/aiops/skills/toggle":
+            if not self._require_ui_auth():
+                return
+            form = _read_form(self)
+            enabled = form.get("enabled") == "on" or form.get("enabled") == "true"
+            try:
+                REGISTRY.hermes().client().toggle_skill(form.get("name", ""), enabled)
+                self._redirect("/settings?msg=Skill+updated#aiops-skills")
+            except HermesError as exc:
+                self._redirect(f"/settings?msg={urllib.parse.quote('Skill toggle failed: ' + str(exc))}#aiops-skills")
+            return
+
+        if path == "/settings/aiops/memory":
+            if not self._require_ui_auth():
+                return
+            form = _read_form(self)
+            section = form.get("memory_section") or "memory"
+            try:
+                REGISTRY.hermes().client().write_memory(section, form.get("content", ""))
+                self._redirect(f"/settings?msg={urllib.parse.quote(section.title() + ' saved')}#aiops-memory")
+            except HermesError as exc:
+                self._redirect(f"/settings?msg={urllib.parse.quote('Memory save failed: ' + str(exc))}#aiops-memory")
             return
 
         if path == "/api/settings":
@@ -671,7 +795,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 )
                 return
-            NOTIFIER.notify(incident["id"], "created" if kind == "created" else "updated")
+            _notify_and_triage(incident["id"], "created" if kind == "created" else "updated")
             self._redirect(f"/incidents/{incident['id']}")
             return
 
@@ -686,7 +810,7 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "already_raised":
                 self._redirect(f"/incidents/{incident['id']}")
                 return
-            NOTIFIER.notify(incident["id"], "created" if kind == "created" else "updated")
+            _notify_and_triage(incident["id"], "created" if kind == "created" else "updated")
             self._redirect(f"/incidents/{incident['id']}")
             return
 
@@ -793,7 +917,7 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(raw_ids, list):
                 raw_ids = []
             result = SERVICE.bulk_apply(action, [str(x) for x in raw_ids], actor="api")
-            NOTIFIER.notify_many(result.get("notify") or [])
+            _notify_many_and_triage(result.get("notify") or [])
             status = 400 if result.get("error") else 200
             self._json(status, result)
             return
@@ -819,7 +943,7 @@ class Handler(BaseHTTPRequestHandler):
             if incident is None:
                 self._json(400, {"error": "title required"})
                 return
-            NOTIFIER.notify(incident["id"], "manual")
+            _notify_and_triage(incident["id"], "manual")
             self._json(201, incident)
             return
 
@@ -1043,8 +1167,9 @@ def _settings_updates_from_form(form: dict[str, str], section: str) -> dict:
         for key in ("created", "updated", "resolved", "reopened", "manual", "acknowledged", "merged"):
             set_bool(f"ntfy.events.{key}", f"event_{key}")
         return updates
-    if section == "hermes":
+    if section in ("hermes", "aiops"):
         set_bool("hermes.enabled", "hermes_enabled")
+        set_bool("hermes.auto_triage", "auto_triage")
         set_text("hermes.webui_url", "webui_url")
         set_text("hermes.webui_password", "webui_password", keep_blank_secret=True)
         set_text("hermes.workspace", "workspace")

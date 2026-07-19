@@ -1,10 +1,12 @@
-"""Hermes AI investigation integration."""
+"""Hermes AIOps integration — investigate + admin (skills/memory)."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
 import json
+import sys
+import threading
 import urllib.error
 import urllib.request
 from typing import Any
@@ -19,11 +21,12 @@ class HermesIntegration:
         id="hermes",
         name="Hermes",
         kind="investigate",
-        description="Start AI investigations against incidents via the Hermes WebUI API.",
+        description="AIOps via Hermes WebUI — investigations, skills, and memory.",
         config_group="hermes",
         enabled_key="hermes.enabled",
         field_keys=[
             "hermes.enabled",
+            "hermes.auto_triage",
             "hermes.webui_url",
             "hermes.webui_password",
             "hermes.workspace",
@@ -47,29 +50,37 @@ class HermesIntegration:
     def public_base_url(self) -> str:
         return get_config().get_str("hermes.public_base_url")
 
+    def connection_errors(self) -> list[str]:
+        """Human-readable blockers when AIOps is on but not ready."""
+        cfg = get_config()
+        if not self.is_enabled():
+            return []
+        errors: list[str] = []
+        if not cfg.get_str("hermes.webui_url"):
+            errors.append("Hermes WebUI URL is not set (HERMES_WEBUI_URL or Settings).")
+        if not cfg.get_str("hermes.webui_password"):
+            errors.append("Hermes WebUI password is not set (HERMES_WEBUI_PASSWORD or Settings).")
+        if errors:
+            return errors
+        try:
+            self.client()
+        except HermesError as exc:
+            errors.append(str(exc))
+        except Exception as exc:
+            errors.append(f"Hermes connection failed: {exc}")
+        return errors
+
+    def is_connected(self) -> bool:
+        return self.is_enabled() and not self.connection_errors()
+
     def validate(self) -> IntegrationStatus:
         cfg = get_config()
         if not self.is_enabled():
-            return IntegrationStatus(False, "Hermes integration is disabled")
-        base = cfg.get_str("hermes.webui_url")
-        if not base:
-            return IntegrationStatus(False, "Hermes WebUI URL is not configured")
-        try:
-            if cfg.get_str("hermes.webui_password"):
-                self.client()
-                return IntegrationStatus(True, f"Authenticated to {base}")
-            req = urllib.request.Request(base, method="GET")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return IntegrationStatus(
-                    True,
-                    f"Reachable (HTTP {resp.status}); set password to verify login",
-                )
-        except HermesError as exc:
-            return IntegrationStatus(False, str(exc), detail=exc.detail)
-        except urllib.error.URLError as exc:
-            return IntegrationStatus(False, f"Hermes unreachable: {exc.reason}")
-        except Exception as exc:
-            return IntegrationStatus(False, str(exc))
+            return IntegrationStatus(False, "AIOps is disabled")
+        errors = self.connection_errors()
+        if errors:
+            return IntegrationStatus(False, errors[0], detail=errors)
+        return IntegrationStatus(True, f"Connected to {cfg.get_str('hermes.webui_url')}")
 
     def forward_webhook(self, incident: dict[str, Any]) -> tuple[int, bytes]:
         cfg = get_config()
@@ -97,3 +108,33 @@ class HermesIntegration:
             return 502, json.dumps(
                 {"error": "hermes webhook unreachable", "detail": str(exc.reason)}
             ).encode("utf-8")
+
+    def maybe_auto_triage(
+        self,
+        incident_id: str,
+        *,
+        event: str = "created",
+        investigate=None,
+    ) -> None:
+        """Fire-and-forget investigation when auto-triage is enabled."""
+        if event not in ("created", "manual"):
+            return
+        if investigate is None:
+            return
+        cfg = get_config()
+        if not cfg.auto_triage_enabled():
+            return
+        if self.connection_errors():
+            sys.stderr.write(
+                f"auto-triage skipped incident={incident_id}: AIOps not connected\n"
+            )
+            return
+
+        def _run() -> None:
+            try:
+                investigate(incident_id)
+                sys.stderr.write(f"auto-triage started incident={incident_id}\n")
+            except Exception as exc:
+                sys.stderr.write(f"auto-triage failed incident={incident_id}: {exc}\n")
+
+        threading.Thread(target=_run, name=f"auto-triage-{incident_id}", daemon=True).start()

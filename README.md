@@ -23,13 +23,15 @@ Alertmanager → alerts inbox (UI: /alerts)
 
 ## Integrations (modular)
 
-Settings → Integrations configures:
+Settings → Integrations / AIOps:
 
 | Integration | Kind | Role |
 |-------------|------|------|
 | **Prometheus** | ingest | Alertmanager / Grafana webhooks → `/hook` |
 | **ntfy** | notify | Incident push notifications |
-| **Hermes** | investigate | WebUI agent sessions |
+| **AIOps (Hermes)** | investigate | Investigations, skills, memory; optional auto-triage |
+
+**AIOps:** enable via Settings or `HEARTH_AIOPS_ENABLED` / `HERMES_ENABLED`. Hermes env vars (`HERMES_WEBUI_*`, etc.) are applied and locked. Red status errors show until connected. When connected, manage skills + SOUL/USER/MEMORY from Hearth. **Auto-triage** (`HERMES_AUTO_TRIAGE`) starts Investigate on new incidents.
 
 New adapters implement the protocol in `integrations/` and register in `integrations/registry.py`.
 
