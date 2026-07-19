@@ -72,10 +72,9 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          # Bare semver only — Renovate in truecharts tracks these tags.
           tags: |
             type=raw,value=${{ steps.version.outputs.version }}
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         if: steps.version.outputs.skip != 'true'
