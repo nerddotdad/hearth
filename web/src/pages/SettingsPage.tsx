@@ -2,7 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { api, type SettingsField } from '../lib/api/client'
-import { faFloppyDisk, faWifi } from '../lib/icons'
+import { faArrowsRotate, faFloppyDisk, faWifi } from '../lib/icons'
+
+const AIOPS_AGENTS = [{ id: 'hermes', label: 'Hermes' }] as const
+const MODEL_PLATFORMS = [{ id: 'ollama', label: 'Ollama' }] as const
 
 type Tab = 'general' | 'integrations' | 'aiops' | 'auto-raise' | 'display'
 
@@ -84,6 +87,45 @@ function BoolToggle({
   )
 }
 
+function SelectField({
+  field,
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  field?: SettingsField
+  value: string
+  options: Array<{ id: string; label: string }>
+  onChange: (v: string) => void
+  disabled?: boolean
+}) {
+  if (!field) return null
+  const locked = Boolean(field.locked)
+  const known = options.some((o) => o.id === value)
+  return (
+    <div className={`field ${locked ? 'field-locked' : ''}`}>
+      <label>
+        {field.label || field.key}
+        {locked ? <span className="lock-badge">env</span> : null}
+      </label>
+      {field.hint ? <div className="muted">{field.hint}</div> : null}
+      <select
+        value={value}
+        disabled={locked || disabled}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {!known && value ? <option value={value}>{value}</option> : null}
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )
+}
+
 export function SettingsPage() {
   const [tab, setTab] = useState<Tab>(() => {
     const hash = window.location.hash.replace(/^#/, '') as Tab
@@ -118,6 +160,28 @@ export function SettingsPage() {
     return String(field.value ?? '')
   }
 
+  const agentKind = String(val('hermes.agent', hermes['hermes.agent']) || 'hermes')
+  const modelPlatform = String(
+    val('hermes.model_platform', hermes['hermes.model_platform']) || 'ollama',
+  )
+  const ollamaUrl = String(val('hermes.ollama_url', hermes['hermes.ollama_url']) || '')
+  const selectedModel = String(val('hermes.agent_model', hermes['hermes.agent_model']) || '')
+
+  const ollamaModels = useQuery({
+    queryKey: ['aiops-models', modelPlatform, ollamaUrl],
+    queryFn: () => api.aiopsModels(modelPlatform, ollamaUrl || undefined),
+    enabled: tab === 'aiops' && modelPlatform === 'ollama' && Boolean(ollamaUrl.trim()),
+    retry: 1,
+  })
+
+  const modelOptions = useMemo(() => {
+    const fromApi = (ollamaModels.data?.models || []).map((m) => ({ id: m, label: m }))
+    if (selectedModel && !fromApi.some((m) => m.id === selectedModel)) {
+      return [{ id: selectedModel, label: selectedModel }, ...fromApi]
+    }
+    return fromApi
+  }, [ollamaModels.data?.models, selectedModel])
+
   const save = useMutation({
     mutationFn: (updates: Record<string, unknown>) => api.saveSettings(updates),
     onSuccess: (res) => {
@@ -134,10 +198,17 @@ export function SettingsPage() {
     onError: (err) => setFlash((err as Error).message),
   })
 
-  const saveKeys = (keys: string[]) => {
+  const saveKeys = (keys: string[], fields?: Record<string, SettingsField>) => {
     const updates: Record<string, unknown> = {}
     for (const key of keys) {
-      if (key in draft) updates[key] = draft[key]
+      if (key in draft) {
+        updates[key] = draft[key]
+        continue
+      }
+      // Wizard-style saves: persist current displayed values, not only dirty draft keys.
+      if (fields?.[key] && !fields[key].locked) {
+        updates[key] = val(key, fields[key])
+      }
     }
     if (!Object.keys(updates).length) {
       setFlash('No changes to save')
@@ -321,7 +392,11 @@ export function SettingsPage() {
 
       {tab === 'aiops' ? (
         <div className="panel">
-          <h2 style={{ marginTop: 0 }}>AIOps</h2>
+          <h2 style={{ marginTop: 0 }}>AIOps setup</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            Point Hearth at an agent and a model platform, pick a model, then test. Env vars still
+            override any field marked <span className="lock-badge">env</span>.
+          </p>
           {aiops.data?.errors?.length ? (
             <div className="panel error-banner">
               <strong>AIOps not ready</strong>
@@ -335,63 +410,188 @@ export function SettingsPage() {
           {aiops.data?.connected ? (
             <div className="panel flash">
               <strong>AIOps connected</strong>
+              {aiops.data.agent || aiops.data.model ? (
+                <div className="muted">
+                  {[aiops.data.agent, aiops.data.model_platform, aiops.data.model]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </div>
+              ) : null}
             </div>
           ) : null}
-          <div className="grid">
-            <BoolToggle
-              field={hermes['hermes.enabled']}
-              checked={Boolean(val('hermes.enabled', hermes['hermes.enabled']))}
-              onChange={(v) => setDraft((d) => ({ ...d, 'hermes.enabled': v }))}
-            />
-            <BoolToggle
-              field={hermes['hermes.auto_triage']}
-              checked={Boolean(val('hermes.auto_triage', hermes['hermes.auto_triage']))}
-              onChange={(v) => setDraft((d) => ({ ...d, 'hermes.auto_triage': v }))}
-            />
-            {(
-              [
-                'hermes.webui_url',
-                'hermes.webui_password',
-                'hermes.workspace',
-                'hermes.public_base_url',
-              ] as const
-            ).map((key) => (
-              <FieldInput
-                key={key}
-                field={hermes[key]}
-                value={String(val(key, hermes[key]))}
-                onChange={(v) => setDraft((d) => ({ ...d, [key]: v }))}
-              />
-            ))}
-            <div className="actions">
-              <button
-                className="icon-btn primary"
-                type="button"
-                title="Save AIOps"
-                aria-label="Save AIOps"
-                onClick={() =>
-                  saveKeys([
-                    'hermes.enabled',
-                    'hermes.auto_triage',
-                    'hermes.webui_url',
-                    'hermes.webui_password',
-                    'hermes.workspace',
-                    'hermes.public_base_url',
-                  ])
+
+          <div className="wizard-steps">
+            <section className="wizard-step">
+              <h3>
+                <span className="wizard-num">1</span> Enable
+              </h3>
+              <div className="grid">
+                <BoolToggle
+                  field={hermes['hermes.enabled']}
+                  checked={Boolean(val('hermes.enabled', hermes['hermes.enabled']))}
+                  onChange={(v) => setDraft((d) => ({ ...d, 'hermes.enabled': v }))}
+                />
+                <BoolToggle
+                  field={hermes['hermes.auto_triage']}
+                  checked={Boolean(val('hermes.auto_triage', hermes['hermes.auto_triage']))}
+                  onChange={(v) => setDraft((d) => ({ ...d, 'hermes.auto_triage': v }))}
+                />
+              </div>
+            </section>
+
+            <section className="wizard-step">
+              <h3>
+                <span className="wizard-num">2</span> Agent
+              </h3>
+              <div className="grid">
+                <SelectField
+                  field={hermes['hermes.agent']}
+                  value={agentKind}
+                  options={AIOPS_AGENTS.map((a) => ({ id: a.id, label: a.label }))}
+                  onChange={(v) =>
+                    setDraft((d) => ({
+                      ...d,
+                      'hermes.agent': v,
+                      'hermes.provider': v === 'hermes' ? 'agent' : d['hermes.provider'],
+                    }))
+                  }
+                />
+                {agentKind === 'hermes' ? (
+                  <>
+                    <FieldInput
+                      field={hermes['hermes.agent_url']}
+                      value={String(val('hermes.agent_url', hermes['hermes.agent_url']))}
+                      onChange={(v) => setDraft((d) => ({ ...d, 'hermes.agent_url': v }))}
+                    />
+                    <FieldInput
+                      field={hermes['hermes.agent_api_key']}
+                      value={String(val('hermes.agent_api_key', hermes['hermes.agent_api_key']))}
+                      onChange={(v) => setDraft((d) => ({ ...d, 'hermes.agent_api_key': v }))}
+                    />
+                  </>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="wizard-step">
+              <h3>
+                <span className="wizard-num">3</span> Model platform
+              </h3>
+              <div className="grid">
+                <SelectField
+                  field={hermes['hermes.model_platform']}
+                  value={modelPlatform}
+                  options={MODEL_PLATFORMS.map((p) => ({ id: p.id, label: p.label }))}
+                  onChange={(v) => setDraft((d) => ({ ...d, 'hermes.model_platform': v }))}
+                />
+                {modelPlatform === 'ollama' ? (
+                  <div className="field-with-action">
+                    <FieldInput
+                      field={hermes['hermes.ollama_url']}
+                      value={ollamaUrl}
+                      onChange={(v) => setDraft((d) => ({ ...d, 'hermes.ollama_url': v }))}
+                    />
+                    <button
+                      className="icon-btn"
+                      type="button"
+                      title="Refresh models"
+                      aria-label="Refresh models"
+                      disabled={ollamaModels.isFetching || !ollamaUrl.trim()}
+                      onClick={() => ollamaModels.refetch()}
+                    >
+                      <Icon
+                        icon={faArrowsRotate}
+                        label="Refresh models"
+                        spin={ollamaModels.isFetching}
+                      />
+                    </button>
+                  </div>
+                ) : null}
+                {ollamaModels.isError ? (
+                  <div className="error-banner">
+                    {(ollamaModels.error as Error).message || 'Failed to list Ollama models'}
+                  </div>
+                ) : null}
+              </div>
+            </section>
+
+            <section className="wizard-step">
+              <h3>
+                <span className="wizard-num">4</span> Model
+              </h3>
+              <div className="grid">
+                {modelOptions.length || selectedModel ? (
+                  <SelectField
+                    field={hermes['hermes.agent_model']}
+                    value={selectedModel}
+                    options={
+                      modelOptions.length
+                        ? modelOptions
+                        : selectedModel
+                          ? [{ id: selectedModel, label: selectedModel }]
+                          : []
+                    }
+                    onChange={(v) => setDraft((d) => ({ ...d, 'hermes.agent_model': v }))}
+                    disabled={!modelOptions.length && !selectedModel}
+                  />
+                ) : (
+                  <div className="field">
+                    <label>{hermes['hermes.agent_model']?.label || 'Model'}</label>
+                    <div className="muted">
+                      {ollamaModels.isFetching
+                        ? 'Loading models from Ollama…'
+                        : 'No models found. Pull a model in Ollama, then refresh.'}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+
+          <div className="actions" style={{ marginTop: 16 }}>
+            <button
+              className="icon-btn primary"
+              type="button"
+              title="Save AIOps"
+              aria-label="Save AIOps"
+              onClick={() => {
+                const keys = [
+                  'hermes.enabled',
+                  'hermes.auto_triage',
+                  'hermes.agent',
+                  'hermes.model_platform',
+                  'hermes.ollama_url',
+                  'hermes.provider',
+                  'hermes.agent_url',
+                  'hermes.agent_api_key',
+                  'hermes.agent_model',
+                ]
+                const updates: Record<string, unknown> = {}
+                for (const key of keys) {
+                  if (key in draft) updates[key] = draft[key]
+                  else if (hermes[key] && !hermes[key].locked) updates[key] = val(key, hermes[key])
                 }
-              >
-                <Icon icon={faFloppyDisk} label="Save AIOps" />
-              </button>
-              <button
-                className="icon-btn"
-                type="button"
-                title="Test Hermes"
-                aria-label="Test Hermes"
-                onClick={() => test.mutate('hermes')}
-              >
-                <Icon icon={faWifi} label="Test Hermes" />
-              </button>
-            </div>
+                if (!hermes['hermes.provider']?.locked) updates['hermes.provider'] = 'agent'
+                if (!hermes['hermes.agent']?.locked && !updates['hermes.agent']) {
+                  updates['hermes.agent'] = 'hermes'
+                }
+                if (!hermes['hermes.model_platform']?.locked && !updates['hermes.model_platform']) {
+                  updates['hermes.model_platform'] = 'ollama'
+                }
+                save.mutate(updates)
+              }}
+            >
+              <Icon icon={faFloppyDisk} label="Save AIOps" />
+            </button>
+            <button
+              className="icon-btn"
+              type="button"
+              title="Test AIOps"
+              aria-label="Test AIOps"
+              onClick={() => test.mutate('hermes')}
+            >
+              <Icon icon={faWifi} label="Test AIOps" />
+            </button>
           </div>
         </div>
       ) : null}

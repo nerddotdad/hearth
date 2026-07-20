@@ -130,7 +130,19 @@ export type AiopsStatus = {
   auto_triage: boolean
   connected: boolean
   errors: string[]
+  agent?: string
+  model_platform?: string
+  model?: string
+  ollama_url?: string
+  provider?: string
   env_keys?: Record<string, string>
+}
+
+export type AiopsModelsResponse = {
+  ok: boolean
+  platform: string
+  url: string
+  models: string[]
 }
 
 export type AgentMessage = {
@@ -260,6 +272,13 @@ export const api = {
     }),
 
   aiopsStatus: () => request<AiopsStatus>('/api/aiops/status'),
+
+  aiopsModels: (platform = 'ollama', url?: string) => {
+    const sp = new URLSearchParams()
+    sp.set('platform', platform)
+    if (url) sp.set('url', url)
+    return request<AiopsModelsResponse>(`/api/aiops/models?${sp.toString()}`)
+  },
 
   aiopsSkills: () =>
     request<{ ok: boolean; skills: Array<Record<string, unknown>> }>('/api/aiops/skills'),

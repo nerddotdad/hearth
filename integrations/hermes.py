@@ -30,6 +30,9 @@ class HermesIntegration:
         field_keys=[
             "hermes.enabled",
             "hermes.auto_triage",
+            "hermes.agent",
+            "hermes.model_platform",
+            "hermes.ollama_url",
             "hermes.provider",
             "hermes.agent_url",
             "hermes.agent_api_key",
@@ -46,7 +49,19 @@ class HermesIntegration:
     def is_enabled(self) -> bool:
         return get_config().get_bool(self.meta.enabled_key)
 
+    def agent_kind(self) -> str:
+        raw = (get_config().get_str("hermes.agent") or "hermes").strip().lower()
+        return raw or "hermes"
+
+    def model_platform(self) -> str:
+        raw = (get_config().get_str("hermes.model_platform") or "ollama").strip().lower()
+        return raw or "ollama"
+
     def provider(self) -> Provider:
+        # Wizard agents use the OpenAI-compatible agent API. Legacy webui remains explicit.
+        if self.agent_kind() != "hermes":
+            # Future agents plug in here; keep investigate path on agent API for now.
+            return "agent"
         raw = (get_config().get_str("hermes.provider") or "agent").strip().lower()
         return "webui" if raw == "webui" else "agent"
 
@@ -63,7 +78,7 @@ class HermesIntegration:
         return HearthAgentClient(
             base_url=cfg.get_str("hermes.agent_url"),
             api_key=cfg.get_str("hermes.agent_api_key"),
-            model=cfg.get_str("hermes.agent_model") or "hermes-agent",
+            model=cfg.get_str("hermes.agent_model") or "",
         )
 
     def public_base_url(self) -> str:
@@ -77,9 +92,11 @@ class HermesIntegration:
         errors: list[str] = []
         if self.provider() == "agent":
             if not cfg.get_str("hermes.agent_url"):
-                errors.append("Hearth Agent URL is not set (HEARTH_AGENT_URL or Settings).")
+                errors.append("Agent URL is not set (HEARTH_AGENT_URL or Settings → AIOps).")
             if not cfg.get_str("hermes.agent_api_key"):
-                errors.append("Hearth Agent API key is not set (HEARTH_AGENT_API_KEY or Settings).")
+                errors.append("Agent API key is not set (HEARTH_AGENT_API_KEY or Settings → AIOps).")
+            if not cfg.get_str("hermes.agent_model"):
+                errors.append("Model is not set — pick one under Settings → AIOps.")
             if errors:
                 return errors
             try:
@@ -87,7 +104,7 @@ class HermesIntegration:
             except AgentError as exc:
                 errors.append(str(exc))
             except Exception as exc:
-                errors.append(f"Hearth Agent connection failed: {exc}")
+                errors.append(f"Agent connection failed: {exc}")
             return errors
 
         if not cfg.get_str("hermes.webui_url"):
@@ -115,7 +132,11 @@ class HermesIntegration:
         if errors:
             return IntegrationStatus(False, errors[0], detail=errors)
         if self.provider() == "agent":
-            return IntegrationStatus(True, f"Connected to hearth-agent at {cfg.get_str('hermes.agent_url')}")
+            model = cfg.get_str("hermes.agent_model") or "?"
+            return IntegrationStatus(
+                True,
+                f"Connected to {self.agent_kind()} at {cfg.get_str('hermes.agent_url')} (model {model})",
+            )
         return IntegrationStatus(True, f"Connected to WebUI {cfg.get_str('hermes.webui_url')}")
 
     def forward_webhook(self, incident: dict[str, Any]) -> tuple[int, bytes]:

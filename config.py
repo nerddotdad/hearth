@@ -261,7 +261,71 @@ FIELD_DEFS: list[FieldDef] = [
         "bool",
         "hermes",
         "Auto-triage",
-        "Automatically start a Hermes investigation on new incidents and on reopen",
+        "Automatically start an investigation on new incidents and on reopen",
+    ),
+    FieldDef(
+        "hermes.agent",
+        "HEARTH_AIOPS_AGENT",
+        "hermes",
+        "str",
+        "hermes",
+        "Agent",
+        "Investigate runtime: hermes (more agents later)",
+    ),
+    FieldDef(
+        "hermes.model_platform",
+        "HEARTH_MODEL_PLATFORM",
+        "ollama",
+        "str",
+        "hermes",
+        "Model platform",
+        "Where models are hosted: ollama (more platforms later)",
+    ),
+    FieldDef(
+        "hermes.ollama_url",
+        "HEARTH_OLLAMA_URL",
+        "http://ollama.ai.svc.cluster.local:11434",
+        "str",
+        "hermes",
+        "Ollama URL",
+        "Used to list installed models for the Model dropdown",
+    ),
+    FieldDef(
+        "hermes.provider",
+        "HEARTH_AIOPS_PROVIDER",
+        "agent",
+        "str",
+        "hermes",
+        "AIOps provider",
+        "agent (Hermes Agent API) or webui (legacy Hermes WebUI)",
+    ),
+    FieldDef(
+        "hermes.agent_url",
+        "HEARTH_AGENT_URL",
+        "",
+        "str",
+        "hermes",
+        "Agent URL",
+        "Hermes Agent OpenAI-compatible API base (e.g. http://127.0.0.1:8642)",
+    ),
+    FieldDef(
+        "hermes.agent_api_key",
+        "HEARTH_AGENT_API_KEY",
+        "",
+        "secret",
+        "hermes",
+        "Agent API key",
+        "Bearer for the agent API (never put in chat prompts)",
+        secret=True,
+    ),
+    FieldDef(
+        "hermes.agent_model",
+        "HEARTH_AGENT_MODEL",
+        "qwen3.6:27b",
+        "str",
+        "hermes",
+        "Model",
+        "Sent as OpenAI model on each Hermes API call (must exist in Hermes model_routes / Ollama)",
     ),
     FieldDef(
         "hermes.webui_url",
@@ -269,8 +333,8 @@ FIELD_DEFS: list[FieldDef] = [
         "",
         "str",
         "hermes",
-        "WebUI URL",
-        "In-cluster Hermes WebUI base URL",
+        "WebUI URL (legacy)",
+        "Legacy Hermes WebUI base URL",
     ),
     FieldDef(
         "hermes.webui_password",
@@ -278,7 +342,7 @@ FIELD_DEFS: list[FieldDef] = [
         "",
         "secret",
         "hermes",
-        "WebUI password",
+        "WebUI password (legacy)",
         secret=True,
     ),
     FieldDef(
@@ -287,7 +351,7 @@ FIELD_DEFS: list[FieldDef] = [
         "/workspace",
         "str",
         "hermes",
-        "Default workspace",
+        "Default workspace (legacy)",
     ),
     FieldDef(
         "hermes.public_base_url",
@@ -295,8 +359,8 @@ FIELD_DEFS: list[FieldDef] = [
         "",
         "str",
         "hermes",
-        "Public base URL",
-        "Open-in-Hermes links",
+        "Public base URL (legacy)",
+        "Open-in-Hermes WebUI links",
     ),
     FieldDef(
         "hermes.webhook_url",
@@ -315,43 +379,6 @@ FIELD_DEFS: list[FieldDef] = [
         "hermes",
         "Webhook secret (legacy)",
         secret=True,
-    ),
-    FieldDef(
-        "hermes.provider",
-        "HEARTH_AIOPS_PROVIDER",
-        "agent",
-        "str",
-        "hermes",
-        "AIOps provider",
-        "agent (hearth-agent / Hermes core) or webui (Hermes WebUI fallback)",
-    ),
-    FieldDef(
-        "hermes.agent_url",
-        "HEARTH_AGENT_URL",
-        "",
-        "str",
-        "hermes",
-        "Hearth Agent URL",
-        "In-cluster Hermes Agent API base (e.g. http://hearth-agent.ai.svc:8642)",
-    ),
-    FieldDef(
-        "hermes.agent_api_key",
-        "HEARTH_AGENT_API_KEY",
-        "",
-        "secret",
-        "hermes",
-        "Hearth Agent API key",
-        "Bearer for hearth-agent OpenAI-compatible API (never put in chat)",
-        secret=True,
-    ),
-    FieldDef(
-        "hermes.agent_model",
-        "HEARTH_AGENT_MODEL",
-        "hermes-agent",
-        "str",
-        "hermes",
-        "Agent model id",
-        "Passed to /v1/chat/completions as model",
     ),
     # Triage sandbox (LLM-agnostic tool runtime)
     FieldDef(
@@ -709,7 +736,9 @@ class ConfigStore:
             if provider == "webui" and not self.get_str("hermes.webui_url"):
                 hints.append("AIOps WebUI provider selected but Hermes WebUI URL is missing — fix Settings → AIOps.")
             if provider != "webui" and not self.get_str("hermes.agent_url"):
-                hints.append("AIOps agent provider selected but Hearth Agent URL is missing — fix Settings → AIOps.")
+                hints.append("AIOps needs an Agent URL — complete Settings → AIOps.")
+            if provider != "webui" and not self.get_str("hermes.agent_model"):
+                hints.append("AIOps needs a model — pick one under Settings → AIOps.")
         return hints
 
 

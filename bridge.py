@@ -507,10 +507,48 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": not errors,
                     "enabled": CONFIG.aiops_enabled(),
                     "auto_triage": CONFIG.auto_triage_enabled(),
+                    "agent": hermes.agent_kind(),
+                    "model_platform": hermes.model_platform(),
+                    "model": CONFIG.get_str("hermes.agent_model") or "",
+                    "ollama_url": CONFIG.get_str("hermes.ollama_url") or "",
                     "provider": hermes.provider(),
                     "connected": hermes.is_connected(),
                     "errors": errors,
                     "env_keys": CONFIG.hydrate_aiops_from_env() if CONFIG.aiops_enabled() else {},
+                },
+            )
+            return
+
+        if path == "/api/aiops/models":
+            if not self._require_api_auth(query):
+                return
+            params = urllib.parse.parse_qs(query)
+            platform = (
+                (params.get("platform") or [CONFIG.get_str("hermes.model_platform") or "ollama"])[0]
+                .strip()
+                .lower()
+            )
+            if platform != "ollama":
+                self._json(400, {"error": f"unsupported model platform: {platform}"})
+                return
+            ollama_url = (params.get("url") or [""])[0].strip() or CONFIG.get_str("hermes.ollama_url")
+            try:
+                from ollama_client import OllamaError, list_models
+
+                models = list_models(ollama_url)
+            except OllamaError as exc:
+                self._json(502, {"error": str(exc), "detail": getattr(exc, "detail", None)})
+                return
+            except Exception as exc:
+                self._json(502, {"error": f"failed to list models: {exc}"})
+                return
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "platform": "ollama",
+                    "url": (ollama_url or "").rstrip("/"),
+                    "models": models,
                 },
             )
             return
@@ -533,7 +571,8 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True,
                     "mcp_url": mcp_url,
                     "provider": REGISTRY.hermes().provider(),
-                    "model": CONFIG.get_str("hermes.agent_model") or "hermes-agent",
+                    "model": CONFIG.get_str("hermes.agent_model") or "",
+                    "model_platform": CONFIG.get_str("hermes.model_platform") or "ollama",
                     "note": "Secrets are never returned — configure MCP Authorization from env.",
                 },
             )
