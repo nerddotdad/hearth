@@ -510,6 +510,10 @@ export function SettingsPage() {
                 {ollamaModels.isError ? (
                   <div className="error-banner">
                     {(ollamaModels.error as Error).message || 'Failed to list Ollama models'}
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      The Model dropdown needs a reachable Ollama URL. You can still keep a previously
+                      saved model value until listing works again.
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -540,7 +544,9 @@ export function SettingsPage() {
                     <div className="muted">
                       {ollamaModels.isFetching
                         ? 'Loading models from Ollama…'
-                        : 'No models found. Pull a model in Ollama, then refresh.'}
+                        : ollamaModels.isError
+                          ? 'Model list unavailable until Ollama is reachable — fix the URL above and refresh.'
+                          : 'No models found. Pull a model in Ollama, then refresh.'}
                     </div>
                   </div>
                 )}

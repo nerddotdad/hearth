@@ -20,6 +20,7 @@ from hermes_client import HermesError
 from incidents import IncidentService, safe_id
 from integrations import init_registry
 from notifications import NotificationService
+from ollama_client import OllamaError, list_models as list_ollama_models
 from sandbox.mcp import McpHandler
 from sandbox.runtime import init_sandbox_service
 from sandbox.wsutil import accept_key, encode_frame, read_frame
@@ -533,9 +534,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             ollama_url = (params.get("url") or [""])[0].strip() or CONFIG.get_str("hermes.ollama_url")
             try:
-                from ollama_client import OllamaError, list_models
-
-                models = list_models(ollama_url)
+                models = list_ollama_models(ollama_url)
             except OllamaError as exc:
                 self._json(502, {"error": str(exc), "detail": getattr(exc, "detail", None)})
                 return
