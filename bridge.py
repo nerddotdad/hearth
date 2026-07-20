@@ -665,6 +665,16 @@ class Handler(BaseHTTPRequestHandler):
             updates = _settings_updates_from_form(form, section)
             was_aiops = CONFIG.aiops_enabled()
             CONFIG.save_ui(updates)
+            section_anchors = {
+                "core": "#general",
+                "prometheus": "#integrations",
+                "ntfy": "#integrations",
+                "hermes": "#aiops",
+                "aiops": "#aiops",
+                "auto_raise": "#auto-raise",
+                "display": "#display",
+            }
+            anchor = section_anchors.get(section, "")
             if section in ("hermes", "aiops") and CONFIG.aiops_enabled() and not was_aiops:
                 found = CONFIG.hydrate_aiops_from_env()
                 if found:
@@ -674,7 +684,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
             label = "AIOps" if section in ("hermes", "aiops") else section.replace("_", " ").title()
-            self._redirect(f"/settings?msg={urllib.parse.quote(label + ' settings saved')}#aiops" if section in ("hermes", "aiops") else f"/settings?msg={urllib.parse.quote(label + ' settings saved')}")
+            self._redirect(f"/settings?msg={urllib.parse.quote(label + ' settings saved')}{anchor}")
             return
 
         if path.startswith("/settings/test/"):
@@ -687,7 +697,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect("/settings?msg=Unknown+integration")
                 return
             msg = ("OK:+" if status.ok else "Failed:+") + urllib.parse.quote(status.message)
-            anchor = "#aiops" if integration_id == "hermes" else ""
+            if integration_id == "hermes":
+                anchor = "#aiops"
+            elif integration_id in ("prometheus", "ntfy"):
+                anchor = "#integrations"
+            else:
+                anchor = ""
             self._redirect(f"/settings?msg={msg}{anchor}")
             return
 

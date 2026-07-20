@@ -8,7 +8,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: homelab-alert-bridge
+  IMAGE_NAME: hearth
 
 jobs:
   build:

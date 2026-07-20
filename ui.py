@@ -344,7 +344,21 @@ def _lazy_list_script(*, kind: str, api_path: str, status_filter: str, checkbox_
     """
 
 
-def layout(title: str, body: str, *, public_base: str = "") -> str:
+def layout(title: str, body: str, *, nav_active: str = "", public_base: str = "") -> str:
+    del public_base  # reserved for future absolute asset/link base
+    nav_items = (
+        ("incidents", "/", "Incidents"),
+        ("alerts", "/alerts", "Alerts"),
+        ("new", "/incidents/new", "New"),
+        ("settings", "/settings", "Settings"),
+    )
+    nav_links = []
+    for key, href, label in nav_items:
+        cls = "active" if key == nav_active else ""
+        aria = ' aria-current="page"' if key == nav_active else ""
+        nav_links.append(f'<a class="{cls}" href="{href}"{aria}>{_esc(label)}</a>')
+    nav_html = "\n      ".join(nav_links)
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -377,11 +391,41 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
     a {{ color: var(--accent); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .wrap {{ max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }}
-    header {{
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 16px; margin-bottom: 24px;
+    .site-header {{
+      display: flex; align-items: flex-end; justify-content: space-between;
+      gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 16px;
     }}
-    header h1 {{ margin: 0; font-size: 1.35rem; letter-spacing: 0.02em; }}
+    .site-header h1 {{ margin: 0; font-size: 1.35rem; letter-spacing: 0.02em; }}
+    .brand-link {{ color: inherit; text-decoration: none; }}
+    .brand-link:hover {{ text-decoration: none; color: var(--accent); }}
+    .site-nav {{
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    }}
+    .site-nav a {{
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 36px; padding: 6px 12px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 500;
+    }}
+    .site-nav a:hover {{
+      color: var(--text);
+      background: var(--panel);
+      text-decoration: none;
+    }}
+    .site-nav a.active {{
+      color: var(--text);
+      background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+      border-color: var(--accent);
+    }}
+    .page-toolbar {{
+      display: flex; gap: 8px; flex-wrap: wrap;
+      align-items: center; margin-bottom: 12px;
+    }}
     .panel {{
       background: color-mix(in srgb, var(--panel) 92%, transparent);
       border: 1px solid var(--border);
@@ -569,18 +613,24 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
     }}
     .integ-pill.ok {{ color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }}
     .integ-pill.bad {{ color: var(--crit); border-color: color-mix(in srgb, var(--crit) 40%, var(--border)); }}
-    .settings-nav {{
-      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;
+    .settings-tabs {{
+      display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px;
     }}
-    .settings-nav a {{
+    .settings-tabs [role="tab"] {{
+      min-height: 36px;
       padding: 6px 12px;
       border: 1px solid var(--border);
       border-radius: 999px;
       background: var(--panel);
-      color: var(--text);
-      text-decoration: none;
+      color: var(--muted);
     }}
-    .settings-nav a:hover {{ border-color: var(--accent); text-decoration: none; }}
+    .settings-tabs [role="tab"]:hover {{ border-color: var(--accent); color: var(--text); }}
+    .settings-tabs [role="tab"][aria-selected="true"] {{
+      color: var(--text);
+      background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+      border-color: var(--accent);
+    }}
+    .settings-panel[hidden] {{ display: none !important; }}
     .error-banner {{
       border-color: color-mix(in srgb, var(--crit) 55%, var(--border));
       background: color-mix(in srgb, var(--crit) 10%, var(--panel));
@@ -654,12 +704,14 @@ def layout(title: str, body: str, *, public_base: str = "") -> str:
 </head>
 <body>
   <div class="wrap">
-    <header>
+    <header class="site-header">
       <div>
-        <h1>Hearth</h1>
+        <h1><a class="brand-link" href="/">Hearth</a></h1>
         <div class="muted">Homelab incident desk</div>
       </div>
-      <div class="muted">Alerts in · tickets out · agents optional</div>
+      <nav class="site-nav" aria-label="Primary">
+      {nav_html}
+      </nav>
     </header>
     {body}
   </div>
@@ -671,10 +723,10 @@ def error_page(message: str) -> str:
     body = f"""
     <div class="panel" style="max-width:520px;margin:48px auto;">
       <h2 style="margin-top:0;">{_esc(message)}</h2>
-      <p><a href="/">← Back to incidents</a></p>
+      <p class="muted">Use the navigation above, or <a href="/">return to incidents</a>.</p>
     </div>
     """
-    return layout("Error", body)
+    return layout("Error", body, nav_active="incidents")
 
 
 def incident_list_page(
@@ -715,11 +767,8 @@ def incident_list_page(
     return_hidden = f'<input type="hidden" name="return_status" value="{_esc(status_filter)}">'
 
     body = f"""
-    <div class="filters">
+    <div class="page-toolbar filters">
       {''.join(filters)}
-      <a class="btn" href="/alerts">Alerts inbox</a>
-      <a class="btn primary" href="/incidents/new">+ New incident</a>
-      <a class="btn" href="/settings">Settings</a>
     </div>
     {flash}
     {aiops_banner}
@@ -748,7 +797,7 @@ def incident_list_page(
     </form>
     {_lazy_list_script(kind="incidents", api_path="/api/list/incidents", status_filter=status_filter, checkbox_name="incident_id", empty_message="No incidents match this search.")}
     """
-    return layout("Incidents", body)
+    return layout("Incidents", body, nav_active="incidents")
 
 
 def alerts_list_page(
@@ -769,11 +818,8 @@ def alerts_list_page(
     return_hidden = f'<input type="hidden" name="return_status" value="{_esc(status_filter)}">'
 
     body = f"""
-    <p><a href="/">← Incidents</a></p>
-    <div class="filters">
+    <div class="page-toolbar filters">
       {''.join(filters)}
-      <a class="btn primary" href="/">Incidents</a>
-      <a class="btn" href="/settings">Settings</a>
     </div>
     {flash}
     <p class="muted">Alertmanager → <strong>alerts inbox</strong> → raise incident (manual or auto-raise rules in Settings).</p>
@@ -798,13 +844,12 @@ def alerts_list_page(
     </form>
     {_lazy_list_script(kind="alerts", api_path="/api/list/alerts", status_filter=status_filter, checkbox_name="fingerprint", empty_message="No alerts match this search.")}
     """
-    return layout("Alerts", body)
+    return layout("Alerts", body, nav_active="alerts")
 
 
 def create_incident_page(*, error: str = "") -> str:
     err = f'<div class="panel"><span class="badge severity-critical">{_esc(error)}</span></div>' if error else ""
     body = f"""
-    <p><a href="/">← All incidents</a></p>
     {err}
     <div class="panel">
       <h2 style="margin-top:0;">New incident</h2>
@@ -827,7 +872,7 @@ def create_incident_page(*, error: str = "") -> str:
       </form>
     </div>
     """
-    return layout("New incident", body)
+    return layout("New incident", body, nav_active="new")
 
 
 def _agent_panel_script(iid: str, hermes: dict[str, Any], *, auto_investigate: bool = False) -> str:
@@ -1039,7 +1084,6 @@ def incident_detail_page(
     manual_badge = '<span class="badge">manual</span>' if (incident.get("enrichment") or {}).get("manual") else ""
 
     body = f"""
-    <p><a href="/">← All incidents</a></p>
     {msg}
     {merged_banner}
     <div class="panel">
@@ -1105,7 +1149,7 @@ def incident_detail_page(
       </div>
     </div>
     """
-    return layout(incident.get("title") or iid, body)
+    return layout(incident.get("title") or iid, body, nav_active="incidents")
 
 
 def _field_lock_badge(field: dict[str, Any]) -> str:
@@ -1272,30 +1316,20 @@ def settings_page(
             )
         skill_list = "\n".join(rows) if rows else '<p class="muted">No skills found on Hermes yet.</p>'
         return f"""
-        <div class="panel" id="aiops-skills">
-          <h3 style="margin-top:0;">Skills</h3>
-          <p class="muted">Managed on Hermes via API — create, toggle, or delete from Hearth.</p>
-          {skill_list}
-          <h4>Create / update skill</h4>
-          <form method="post" action="/settings/aiops/skills/save" class="grid">
-            <input name="name" placeholder="skill-name" required>
-            <input name="category" placeholder="category (optional)">
-            <textarea name="content" placeholder="SKILL.md content" rows="8" required></textarea>
-            <div class="actions"><button class="primary" type="submit">Save skill</button></div>
-          </form>
+        <div class="settings-panel" data-panel="aiops-skills" id="aiops-skills" role="tabpanel" hidden>
+          <div class="panel">
+            <h2 style="margin-top:0;">Skills</h2>
+            <p class="muted">Managed on Hermes via API — create, toggle, or delete from Hearth.</p>
+            {skill_list}
+            <h3>Create / update skill</h3>
+            <form method="post" action="/settings/aiops/skills/save" class="grid">
+              <input name="name" placeholder="skill-name" required>
+              <input name="category" placeholder="category (optional)">
+              <textarea name="content" placeholder="SKILL.md content" rows="8" required></textarea>
+              <div class="actions"><button class="primary" type="submit">Save skill</button></div>
+            </form>
+          </div>
         </div>
-        <script>
-        (function() {{
-          document.querySelectorAll("[data-skill-more]").forEach((btn) => {{
-            btn.addEventListener("click", () => {{
-              const desc = btn.parentElement && btn.parentElement.querySelector(".skill-desc");
-              if (!desc) return;
-              const open = desc.classList.toggle("is-expanded");
-              btn.textContent = open ? "Show less" : "Read more";
-            }});
-          }});
-        }})();
-        </script>
         """
 
     def _memory_panel() -> str:
@@ -1319,10 +1353,12 @@ def settings_page(
                 """
             )
         return f"""
-        <div class="panel" id="aiops-memory">
-          <h3 style="margin-top:0;">Memory &amp; persona</h3>
-          <p class="muted">Edit Hermes SOUL / USER / MEMORY files through the WebUI API.</p>
-          {''.join(blocks)}
+        <div class="settings-panel" data-panel="aiops-memory" id="aiops-memory" role="tabpanel" hidden>
+          <div class="panel">
+            <h2 style="margin-top:0;">Memory &amp; persona</h2>
+            <p class="muted">Edit Hermes SOUL / USER / MEMORY files through the WebUI API.</p>
+            {''.join(blocks)}
+          </div>
         </div>
         """
 
@@ -1357,36 +1393,51 @@ def settings_page(
     ignored_names = g("prometheus", "prometheus.ignored_alertnames")
     ignored_rules = g("prometheus", "prometheus.ignored_alert_rules")
 
+    skills_tab = (
+        '<button type="button" role="tab" data-tab="aiops-skills" aria-selected="false">Skills</button>'
+        if aiops_connected
+        else ""
+    )
+    memory_tab = (
+        '<button type="button" role="tab" data-tab="aiops-memory" aria-selected="false">Memory</button>'
+        if aiops_connected
+        else ""
+    )
+
     body = f"""
-    <p><a href="/">Incidents</a> · <a href="/alerts">Alerts inbox</a></p>
     {flash}
-    <div class="settings-nav">
-      <a href="#general">General</a>
-      <a href="#integrations">Integrations</a>
-      <a href="#aiops">AIOps</a>
-      <a href="#auto-raise">Auto-raise</a>
-      <a href="#display">Display</a>
-    </div>
     {status_pills()}
     <p class="muted">
       Fields marked <span class="lock-badge">env</span> are set by environment variables and cannot be edited here
       (Grafana-style). Unset env keys are editable and stored on the data volume.
     </p>
 
-    <div class="panel" id="general">
-      <h2 style="margin-top:0;">General</h2>
-      <form method="post" action="/settings" class="grid">
-        <input type="hidden" name="section" value="core">
-        {_text_input("incidents_public_base_url", g("core", "core.incidents_public_base_url"), input_name="incidents_public_base_url", placeholder="https://incidents.example.com")}
-        {_text_input("grafana_public_url", g("core", "core.grafana_public_url"), input_name="grafana_public_url")}
-        {_text_input("default_runbook_url", g("core", "core.default_runbook_url"), input_name="default_runbook_url")}
-        {_text_input("incidents_auth_token", g("core", "core.incidents_auth_token"), input_name="incidents_auth_token")}
-        {_text_input("triage_auth_token", g("core", "core.triage_auth_token"), input_name="triage_auth_token")}
-        <div class="actions"><button class="primary" type="submit">Save general</button></div>
-      </form>
+    <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+      <button type="button" role="tab" data-tab="general" aria-selected="true">General</button>
+      <button type="button" role="tab" data-tab="integrations" aria-selected="false">Integrations</button>
+      <button type="button" role="tab" data-tab="aiops" aria-selected="false">AIOps</button>
+      {skills_tab}
+      {memory_tab}
+      <button type="button" role="tab" data-tab="auto-raise" aria-selected="false">Auto-raise</button>
+      <button type="button" role="tab" data-tab="display" aria-selected="false">Display</button>
     </div>
 
-    <div id="integrations">
+    <div class="settings-panel" data-panel="general" id="general" role="tabpanel">
+      <div class="panel">
+        <h2 style="margin-top:0;">General</h2>
+        <form method="post" action="/settings" class="grid">
+          <input type="hidden" name="section" value="core">
+          {_text_input("incidents_public_base_url", g("core", "core.incidents_public_base_url"), input_name="incidents_public_base_url", placeholder="https://incidents.example.com")}
+          {_text_input("grafana_public_url", g("core", "core.grafana_public_url"), input_name="grafana_public_url")}
+          {_text_input("default_runbook_url", g("core", "core.default_runbook_url"), input_name="default_runbook_url")}
+          {_text_input("incidents_auth_token", g("core", "core.incidents_auth_token"), input_name="incidents_auth_token")}
+          {_text_input("triage_auth_token", g("core", "core.triage_auth_token"), input_name="triage_auth_token")}
+          <div class="actions"><button class="primary" type="submit">Save general</button></div>
+        </form>
+      </div>
+    </div>
+
+    <div class="settings-panel" data-panel="integrations" id="integrations" role="tabpanel" hidden>
       <div class="panel">
         <h2 style="margin-top:0;">Prometheus</h2>
         <p class="muted">{_esc(registry.prometheus().meta.description)}</p>
@@ -1429,68 +1480,73 @@ def settings_page(
           </div>
         </form>
       </div>
-
     </div>
 
-    <div class="panel" id="aiops">
-      <h2 style="margin-top:0;">AIOps</h2>
-      <p class="muted">
-        Optional Hermes module for investigations, skills, and memory.
-        When enabled, Hearth reads Hermes env vars (<code>HERMES_*</code> / <code>HEARTH_AIOPS_ENABLED</code>)
-        and keeps those fields locked.
-      </p>
-      {aiops_status_html}
-      <form method="post" action="/settings" class="grid">
-        <input type="hidden" name="section" value="aiops">
-        {_bool_toggle("hermes_enabled", g("hermes", "hermes.enabled"), label="Enable AIOps")}
-        {_bool_toggle("auto_triage", g("hermes", "hermes.auto_triage"), label="Auto-triage new incidents", hint="Start a Hermes investigation automatically when an incident is created")}
-        {_text_input("webui_url", g("hermes", "hermes.webui_url"), input_name="webui_url")}
-        {_text_input("webui_password", g("hermes", "hermes.webui_password"), input_name="webui_password")}
-        {_text_input("workspace", g("hermes", "hermes.workspace"), input_name="workspace")}
-        {_text_input("public_base_url", g("hermes", "hermes.public_base_url"), input_name="public_base_url")}
-        <details>
-          <summary class="muted" style="cursor:pointer;">Advanced — legacy webhook triage</summary>
-          <div class="grid" style="margin-top:12px;">
-            {_text_input("webhook_url", g("hermes", "hermes.webhook_url"), input_name="webhook_url")}
-            {_text_input("webhook_secret", g("hermes", "hermes.webhook_secret"), input_name="webhook_secret")}
+    <div class="settings-panel" data-panel="aiops" id="aiops" role="tabpanel" hidden>
+      <div class="panel">
+        <h2 style="margin-top:0;">AIOps</h2>
+        <p class="muted">
+          Optional Hermes module for investigations, skills, and memory.
+          When enabled, Hearth reads Hermes env vars (<code>HERMES_*</code> / <code>HEARTH_AIOPS_ENABLED</code>)
+          and keeps those fields locked.
+        </p>
+        {aiops_status_html}
+        <form method="post" action="/settings" class="grid">
+          <input type="hidden" name="section" value="aiops">
+          {_bool_toggle("hermes_enabled", g("hermes", "hermes.enabled"), label="Enable AIOps")}
+          {_bool_toggle("auto_triage", g("hermes", "hermes.auto_triage"), label="Auto-triage new incidents", hint="Start a Hermes investigation automatically when an incident is created")}
+          {_text_input("webui_url", g("hermes", "hermes.webui_url"), input_name="webui_url")}
+          {_text_input("webui_password", g("hermes", "hermes.webui_password"), input_name="webui_password")}
+          {_text_input("workspace", g("hermes", "hermes.workspace"), input_name="workspace")}
+          {_text_input("public_base_url", g("hermes", "hermes.public_base_url"), input_name="public_base_url")}
+          <details>
+            <summary class="muted" style="cursor:pointer;">Advanced — legacy webhook triage</summary>
+            <div class="grid" style="margin-top:12px;">
+              {_text_input("webhook_url", g("hermes", "hermes.webhook_url"), input_name="webhook_url")}
+              {_text_input("webhook_secret", g("hermes", "hermes.webhook_secret"), input_name="webhook_secret")}
+            </div>
+          </details>
+          <div class="actions">
+            <button class="primary" type="submit">Save AIOps</button>
+            <button formaction="/settings/test/hermes" formmethod="post" type="submit">Test connection</button>
           </div>
-        </details>
-        <div class="actions">
-          <button class="primary" type="submit">Save AIOps</button>
-          <button formaction="/settings/test/hermes" formmethod="post" type="submit">Test connection</button>
-        </div>
-      </form>
+        </form>
+      </div>
     </div>
     {_skills_panel()}
     {_memory_panel()}
 
-    <div class="panel" id="auto-raise">
-      <h2 style="margin-top:0;">Auto-raise rules</h2>
-      <p class="muted">
-        Alertmanager webhooks land in the <strong>alerts inbox</strong> first.
-        Matching rules automatically raise an incident and attach the alert.
-      </p>
-      <form method="post" action="/settings" class="grid">
-        <input type="hidden" name="section" value="auto_raise">
-        {_bool_toggle("raise_enabled", g("auto_raise", "auto_raise.enabled"), label="Auto-raise enabled")}
-        {_bool_toggle("group_open", g("auto_raise", "auto_raise.group_open"), label="Group into open incidents")}
-        <label><strong>Minimum severity</strong></label>
-        <select name="min_severity">
-          {''.join(f'<option value="{_esc(s)}" {"selected" if raise_settings.get("min_severity")==s else ""}>{_esc(s)} and above</option>' for s in ("critical", "warning", "info", "unknown"))}
-        </select>
-        <input name="alertnames" placeholder="Alertnames only (comma-separated, empty = all)" value="{_esc(alertnames)}">
-        <textarea name="label_rules" placeholder='Label rules JSON e.g. [{{"alertname":"Foo","namespace":"bar"}}]'>{_esc(label_rules)}</textarea>
-        <div class="actions"><button class="primary" type="submit">Save auto-raise</button></div>
-      </form>
+    <div class="settings-panel" data-panel="auto-raise" id="auto-raise" role="tabpanel" hidden>
+      <div class="panel">
+        <h2 style="margin-top:0;">Auto-raise rules</h2>
+        <p class="muted">
+          Alertmanager webhooks land in the <strong>alerts inbox</strong> first.
+          Matching rules automatically raise an incident and attach the alert.
+        </p>
+        <form method="post" action="/settings" class="grid">
+          <input type="hidden" name="section" value="auto_raise">
+          {_bool_toggle("raise_enabled", g("auto_raise", "auto_raise.enabled"), label="Auto-raise enabled")}
+          {_bool_toggle("group_open", g("auto_raise", "auto_raise.group_open"), label="Group into open incidents")}
+          <label><strong>Minimum severity</strong></label>
+          <select name="min_severity">
+            {''.join(f'<option value="{_esc(s)}" {"selected" if raise_settings.get("min_severity")==s else ""}>{_esc(s)} and above</option>' for s in ("critical", "warning", "info", "unknown"))}
+          </select>
+          <input name="alertnames" placeholder="Alertnames only (comma-separated, empty = all)" value="{_esc(alertnames)}">
+          <textarea name="label_rules" placeholder='Label rules JSON e.g. [{{"alertname":"Foo","namespace":"bar"}}]'>{_esc(label_rules)}</textarea>
+          <div class="actions"><button class="primary" type="submit">Save auto-raise</button></div>
+        </form>
+      </div>
     </div>
 
-    <div class="panel" id="display">
-      <h2 style="margin-top:0;">Display</h2>
-      <form method="post" action="/settings" class="grid">
-        <input type="hidden" name="section" value="display">
-        {_bool_toggle("show_noise", g("display", "display.show_noise"))}
-        <div class="actions"><button class="primary" type="submit">Save display</button></div>
-      </form>
+    <div class="settings-panel" data-panel="display" id="display" role="tabpanel" hidden>
+      <div class="panel">
+        <h2 style="margin-top:0;">Display</h2>
+        <form method="post" action="/settings" class="grid">
+          <input type="hidden" name="section" value="display">
+          {_bool_toggle("show_noise", g("display", "display.show_noise"))}
+          <div class="actions"><button class="primary" type="submit">Save display</button></div>
+        </form>
+      </div>
     </div>
     <style>
       .event-toggle {{
@@ -1504,5 +1560,46 @@ def settings_page(
       .event-toggle input {{ width: auto; margin-top: 4px; }}
       details {{ border-top: 1px solid var(--border); padding-top: 12px; }}
     </style>
+    <script>
+    (function() {{
+      const tabs = Array.from(document.querySelectorAll('.settings-tabs [role="tab"]'));
+      const panels = Array.from(document.querySelectorAll(".settings-panel[data-panel]"));
+      if (!tabs.length || !panels.length) return;
+
+      function showTab(id, pushHash) {{
+        const available = new Set(tabs.map((t) => t.getAttribute("data-tab")));
+        const target = available.has(id) ? id : (tabs[0].getAttribute("data-tab") || "general");
+        for (const tab of tabs) {{
+          const on = tab.getAttribute("data-tab") === target;
+          tab.setAttribute("aria-selected", on ? "true" : "false");
+        }}
+        for (const panel of panels) {{
+          panel.hidden = panel.getAttribute("data-panel") !== target;
+        }}
+        if (pushHash) {{
+          history.replaceState(null, "", "#" + target);
+        }}
+      }}
+
+      for (const tab of tabs) {{
+        tab.addEventListener("click", () => showTab(tab.getAttribute("data-tab"), true));
+      }}
+
+      document.querySelectorAll("[data-skill-more]").forEach((btn) => {{
+        btn.addEventListener("click", () => {{
+          const desc = btn.parentElement && btn.parentElement.querySelector(".skill-desc");
+          if (!desc) return;
+          const open = desc.classList.toggle("is-expanded");
+          btn.textContent = open ? "Show less" : "Read more";
+        }});
+      }});
+
+      const hash = (location.hash || "").replace(/^#/, "");
+      showTab(hash || "general", false);
+      window.addEventListener("hashchange", () => {{
+        showTab((location.hash || "").replace(/^#/, "") || "general", false);
+      }});
+    }})();
+    </script>
     """
-    return layout("Settings", body)
+    return layout("Settings", body, nav_active="settings")

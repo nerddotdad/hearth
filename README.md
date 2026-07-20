@@ -1,8 +1,12 @@
 # Hearth
 
-> **Product name:** Hearth — homelab incident desk (alerts in, tickets out, agents optional).  
-> **Image repo:** still `ghcr.io/nerddotdad/homelab-alert-bridge` (rename cutover is a follow-up).  
-> The [truecharts](https://github.com/nerddotdad/truecharts) repo only pins the GHCR tag in Deployment manifests; edit sources here.
+Homelab incident desk — alerts in, tickets out, agents optional.
+
+| | |
+|--|--|
+| **GitHub** | [nerddotdad/hearth](https://github.com/nerddotdad/hearth) |
+| **Image** | `ghcr.io/nerddotdad/hearth` |
+| **Cluster pin** | [truecharts](https://github.com/nerddotdad/truecharts) → `clusters/.../observability/hearth/` |
 
 ## Flow
 
@@ -78,4 +82,4 @@ Open in Hermes → https://hermes.<domain>/?session_id=<id>
 
 Built by **Build Image** (`.github/workflows/build-image.yml`) on push to `main` or manual **workflow_dispatch**.
 
-**`VERSION`** → GHCR tag; **Renovate** updates the truecharts Deployment pin.
+**`VERSION`** → GHCR tag `ghcr.io/nerddotdad/hearth:<version>`; **Renovate** updates the truecharts Deployment pin.
