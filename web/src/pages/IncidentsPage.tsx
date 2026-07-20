@@ -2,7 +2,7 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../components/Icon'
-import { SeverityBadge, StatusBadge } from '../components/StatusBadge'
+import { AgentBadge, SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { api } from '../lib/api/client'
 import { faMagnifyingGlass } from '../lib/icons'
 
@@ -91,18 +91,24 @@ export function IncidentsPage() {
       ) : null}
 
       <div className="grid">
-        {incidents.map((inc) => (
-          <Link key={inc.id} className="incident-row" to={`/incidents/${inc.id}`}>
-            <div>
-              <div className="row-title">{inc.title || inc.id}</div>
-              <div className="muted mono">{inc.id}</div>
-            </div>
-            <StatusBadge status={inc.status} />
-            <SeverityBadge severity={inc.severity} />
-            <div className="muted">{inc.updated_at || '—'}</div>
-            <div className="muted">{(inc.alerts || []).length} alerts</div>
-          </Link>
-        ))}
+        {incidents.map((inc) => {
+          const agentStatus = String(inc.enrichment?.hermes?.status || '')
+          return (
+            <Link key={inc.id} className="incident-row" to={`/incidents/${inc.id}`}>
+              <div>
+                <div className="row-title">{inc.title || inc.id}</div>
+                <div className="muted mono">{inc.id}</div>
+              </div>
+              <div className="actions" style={{ gap: 6 }}>
+                <StatusBadge status={inc.status} />
+                <AgentBadge status={agentStatus} />
+              </div>
+              <SeverityBadge severity={inc.severity} />
+              <div className="muted">{inc.updated_at || '—'}</div>
+              <div className="muted">{(inc.alerts || []).length} alerts</div>
+            </Link>
+          )
+        })}
       </div>
 
       {!query.isLoading && incidents.length === 0 ? (

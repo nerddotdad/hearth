@@ -338,6 +338,7 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write(f"agent stream error incident={incident_id}: {exc}\n")
         finally:
             SERVICE.mark_hermes_complete(incident_id)
+            publish_ui("incidents", incident_id=incident_id, reason="investigation_complete")
 
     def do_GET(self) -> None:
         path, _, query = self.path.partition("?")

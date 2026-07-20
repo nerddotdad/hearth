@@ -1,10 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { SeverityBadge, StatusBadge } from '../components/StatusBadge'
-import { api } from '../lib/api/client'
-import { faCircleCheck, faRobot, faRotate } from '../lib/icons'
+import { useAgentSession } from '../hooks/useAgentSession'
+import { api, hermesChatUrl } from '../lib/api/client'
+import {
+  faArrowUpRightFromSquare,
+  faCircleCheck,
+  faRobot,
+  faRotate,
+} from '../lib/icons'
 
 export function IncidentDetailPage() {
   const { id = '' } = useParams()
@@ -16,6 +22,27 @@ export function IncidentDetailPage() {
     queryFn: () => api.getIncident(id),
     enabled: Boolean(id),
   })
+
+  const settings = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.getSettings(),
+  })
+
+  const hermes = query.data?.enrichment?.hermes || {}
+  const agent = useAgentSession(id, hermes)
+
+  const hermesBase = useMemo(() => {
+    const field = settings.data?.groups?.hermes?.find((f) => f.key === 'hermes.public_base_url')
+    return field ? String(field.value || '') : ''
+  }, [settings.data])
+
+  const hermesEnabled = useMemo(() => {
+    const field = settings.data?.groups?.hermes?.find((f) => f.key === 'hermes.enabled')
+    if (!field) return true
+    return Boolean(field.raw_value ?? field.value)
+  }, [settings.data])
+
+  const openInHermesUrl = hermesChatUrl(hermesBase, hermes.session_id as string | undefined)
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['incident', id] })
@@ -31,7 +58,7 @@ export function IncidentDetailPage() {
     onSuccess: invalidate,
   })
   const investigate = useMutation({
-    mutationFn: () => api.investigate(id),
+    mutationFn: (force: boolean) => api.investigate(id, force),
     onSuccess: invalidate,
   })
   const addNote = useMutation({
@@ -58,7 +85,7 @@ export function IncidentDetailPage() {
   const status = (incident.status || 'open').toLowerCase()
   const tags = incident.enrichment?.tags || []
   const notes = incident.enrichment?.notes || []
-  const hermes = incident.enrichment?.hermes || {}
+  const sessionId = String(hermes.session_id || '')
 
   return (
     <>
@@ -86,9 +113,6 @@ export function IncidentDetailPage() {
                 <Icon icon={faCircleCheck} /> Resolve
               </button>
             ) : null}
-            <button type="button" onClick={() => investigate.mutate()} disabled={investigate.isPending}>
-              <Icon icon={faRobot} /> Investigate
-            </button>
           </div>
         </div>
         {incident.summary ? <p>{incident.summary}</p> : null}
@@ -100,19 +124,86 @@ export function IncidentDetailPage() {
         ) : null}
       </div>
 
-      <div className="panel">
-        <h3 style={{ marginTop: 0 }}>Agent</h3>
-        <p className="muted">
-          Hermes status: {String(hermes.status || 'none')}
-          {hermes.session_id ? (
-            <>
-              {' '}
-              · session <span className="mono">{String(hermes.session_id)}</span>
-            </>
-          ) : null}
-        </p>
+      <div className="panel" id="agent">
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+            alignItems: 'center',
+          }}
+        >
+          <h3 style={{ margin: 0 }}>Agent</h3>
+          <div className="actions">
+            {hermesEnabled ? (
+              <>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={() => investigate.mutate(false)}
+                  disabled={investigate.isPending}
+                >
+                  <Icon icon={faRobot} /> Investigate
+                </button>
+                {sessionId ? (
+                  <button
+                    type="button"
+                    onClick={() => investigate.mutate(true)}
+                    disabled={investigate.isPending}
+                  >
+                    New investigation
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+            {openInHermesUrl ? (
+              <a className="btn" href={openInHermesUrl} target="_blank" rel="noopener noreferrer">
+                <Icon icon={faArrowUpRightFromSquare} /> Open in Hermes
+              </a>
+            ) : null}
+          </div>
+        </div>
+
+        {!hermesEnabled ? (
+          <div className="agent-status">
+            Hermes integration is disabled. Configure it in <Link to="/settings#aiops">Settings</Link>.
+          </div>
+        ) : (
+          <div className="agent-status">{agent.statusText}</div>
+        )}
+
+        {sessionId ? (
+          <div className="muted mono" style={{ marginTop: 6 }}>
+            session {sessionId}
+          </div>
+        ) : null}
+
         {investigate.isError ? (
-          <div className="error-banner panel">{(investigate.error as Error).message}</div>
+          <div className="error-banner panel" style={{ marginTop: 12 }}>
+            {(investigate.error as Error).message}
+          </div>
+        ) : null}
+
+        {agent.error && sessionId ? (
+          <div className="error-banner panel" style={{ marginTop: 12 }}>
+            {agent.error}
+          </div>
+        ) : null}
+
+        {sessionId ? (
+          <div className="agent-feed" style={{ marginTop: 12 }}>
+            {agent.messages.length ? (
+              agent.messages.map((msg, i) => (
+                <div key={`${msg.role}-${i}`} className={`agent-msg ${msg.role || 'message'}`}>
+                  <div className="role">{msg.role || 'message'}</div>
+                  <div>{msg.content || ''}</div>
+                </div>
+              ))
+            ) : (
+              <div className="muted">No agent messages yet.</div>
+            )}
+          </div>
         ) : null}
       </div>
 
@@ -123,9 +214,7 @@ export function IncidentDetailPage() {
             <div key={alert.fingerprint || alert.labels?.alertname} className="panel" style={{ margin: 0 }}>
               <strong>{alert.labels?.alertname || 'alert'}</strong> · {alert.status}
               <div className="muted mono">{alert.fingerprint}</div>
-              <div>
-                {alert.annotations?.description || alert.annotations?.summary || ''}
-              </div>
+              <div>{alert.annotations?.description || alert.annotations?.summary || ''}</div>
             </div>
           ))}
           {!incident.alerts?.length ? <div className="muted">No alerts attached.</div> : null}

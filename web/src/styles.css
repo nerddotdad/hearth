@@ -257,6 +257,31 @@ textarea {
   color: var(--accent);
 }
 
+.badge.agent-running {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  animation: agent-pulse 1.6s ease-in-out infinite;
+}
+
+.badge.agent-complete {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.badge.agent-other {
+  color: var(--muted);
+}
+
+@keyframes agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
 .grid {
   display: grid;
   gap: 12px;
@@ -350,6 +375,44 @@ textarea {
 
 .flash {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+.agent-feed {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.agent-msg {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  white-space: pre-wrap;
+  font-size: 0.92rem;
+}
+
+.agent-msg.user {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.agent-msg.assistant {
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+}
+
+.agent-msg .role {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.agent-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-top: 10px;
 }
 
 @media (max-width: 800px) {

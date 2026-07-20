@@ -132,6 +132,44 @@ export type AiopsStatus = {
   env_keys?: Record<string, string>
 }
 
+export type AgentMessage = {
+  role?: string
+  content?: string
+}
+
+export type AgentSession = {
+  session_id: string
+  status?: string
+  stream_id?: string
+  title?: string | null
+  messages?: AgentMessage[]
+}
+
+export type InvestigateResult = {
+  incident_id: string
+  session_id?: string
+  stream_id?: string
+  status?: string
+  hermes_url?: string | null
+}
+
+/** EventSource cannot send Authorization headers — pass token in query when set. */
+export function sseUrl(path: string): string {
+  if (!API_TOKEN) return path
+  const join = path.includes('?') ? '&' : '?'
+  return `${path}${join}token=${encodeURIComponent(API_TOKEN)}`
+}
+
+export function hermesChatUrl(
+  publicBaseUrl: string | undefined | null,
+  sessionId: string | undefined | null,
+): string | null {
+  const base = String(publicBaseUrl || '').replace(/\/$/, '')
+  const sid = String(sessionId || '').trim()
+  if (!base || !sid) return null
+  return `${base}/?session_id=${encodeURIComponent(sid)}`
+}
+
 function qs(params: Record<string, string | number | undefined>): string {
   const sp = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
@@ -181,9 +219,17 @@ export const api = {
     }),
 
   investigate: (id: string, force = false) =>
-    request<Record<string, unknown>>(
-      `/api/incidents/${encodeURIComponent(id)}/investigate`,
-      { method: 'POST', body: JSON.stringify({ force }) },
+    request<InvestigateResult>(`/api/incidents/${encodeURIComponent(id)}/investigate`, {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
+
+  getAgentSession: (id: string) =>
+    request<AgentSession>(`/api/incidents/${encodeURIComponent(id)}/agent/session`),
+
+  agentStreamUrl: (id: string, streamId: string) =>
+    sseUrl(
+      `/api/incidents/${encodeURIComponent(id)}/agent/stream?stream_id=${encodeURIComponent(streamId)}`,
     ),
 
   addNote: (id: string, body: string) =>
