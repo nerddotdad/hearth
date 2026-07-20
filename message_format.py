@@ -195,7 +195,7 @@ def build_operator_message(incident: dict) -> str:
     return "\n".join(header + [""] + bodies).strip()
 
 
-def build_hermes_message(incident: dict) -> str:
+def build_hermes_message(incident: dict, *, sandbox_attach: dict | None = None) -> str:
     """Full incident dump for Hermes Ask AI — shared by UI, ntfy, and /homelab/api."""
     lines: list[str] = []
     iid = incident.get("id") or "unknown"
@@ -272,6 +272,28 @@ def build_hermes_message(incident: dict) -> str:
                 f"- {event.get('created_at')} [{event.get('event_type')}] "
                 f"{event.get('actor') or 'system'}{extra}"
             )
+
+    if sandbox_attach and sandbox_attach.get("mcp_url"):
+        lines.extend(
+            [
+                "",
+                "## Hearth triage sandbox (preferred tools)",
+                str(
+                    sandbox_attach.get("instructions")
+                    or (
+                        "Use Hearth MCP tools (sandbox_exec, sandbox_status, sandbox_ensure) "
+                        "for cluster triage. Authenticate via your MCP client config "
+                        "(env-held API key) — never put secrets in chat."
+                    )
+                ),
+                f"MCP URL: `{sandbox_attach['mcp_url']}`",
+                f"Incident ID for tools: `{iid}`",
+                "Auth: use the preconfigured MCP Authorization header (do not ask the user for tokens).",
+            ]
+        )
+        packs = sandbox_attach.get("tool_packs") or []
+        if packs:
+            lines.append(f"Tool packs: {', '.join(str(p) for p in packs)}")
 
     incidents_base = ""
     try:

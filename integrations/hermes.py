@@ -1,4 +1,4 @@
-"""Hermes AIOps integration — investigate + admin (skills/memory)."""
+"""Hermes AIOps integration — investigate via hearth-agent (default) or WebUI fallback."""
 
 from __future__ import annotations
 
@@ -9,24 +9,31 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Literal
 
+from agent_client import AgentError, HearthAgentClient
 from config import get_config
 from hermes_client import HermesClient, HermesError
 from integrations.base import IntegrationMeta, IntegrationStatus
+
+Provider = Literal["agent", "webui"]
 
 
 class HermesIntegration:
     meta = IntegrationMeta(
         id="hermes",
-        name="Hermes",
+        name="AIOps",
         kind="investigate",
-        description="AIOps via Hermes WebUI — investigations, skills, and memory.",
+        description="AIOps via hearth-agent (Hermes core) or Hermes WebUI fallback.",
         config_group="hermes",
         enabled_key="hermes.enabled",
         field_keys=[
             "hermes.enabled",
             "hermes.auto_triage",
+            "hermes.provider",
+            "hermes.agent_url",
+            "hermes.agent_api_key",
+            "hermes.agent_model",
             "hermes.webui_url",
             "hermes.webui_password",
             "hermes.workspace",
@@ -39,12 +46,24 @@ class HermesIntegration:
     def is_enabled(self) -> bool:
         return get_config().get_bool(self.meta.enabled_key)
 
+    def provider(self) -> Provider:
+        raw = (get_config().get_str("hermes.provider") or "agent").strip().lower()
+        return "webui" if raw == "webui" else "agent"
+
     def client(self) -> HermesClient:
         cfg = get_config()
         return HermesClient(
             base_url=cfg.get_str("hermes.webui_url"),
             password=cfg.get_str("hermes.webui_password"),
             workspace=cfg.get_str("hermes.workspace") or "/workspace",
+        )
+
+    def agent_client(self) -> HearthAgentClient:
+        cfg = get_config()
+        return HearthAgentClient(
+            base_url=cfg.get_str("hermes.agent_url"),
+            api_key=cfg.get_str("hermes.agent_api_key"),
+            model=cfg.get_str("hermes.agent_model") or "hermes-agent",
         )
 
     def public_base_url(self) -> str:
@@ -56,6 +75,21 @@ class HermesIntegration:
         if not self.is_enabled():
             return []
         errors: list[str] = []
+        if self.provider() == "agent":
+            if not cfg.get_str("hermes.agent_url"):
+                errors.append("Hearth Agent URL is not set (HEARTH_AGENT_URL or Settings).")
+            if not cfg.get_str("hermes.agent_api_key"):
+                errors.append("Hearth Agent API key is not set (HEARTH_AGENT_API_KEY or Settings).")
+            if errors:
+                return errors
+            try:
+                self.agent_client().list_models()
+            except AgentError as exc:
+                errors.append(str(exc))
+            except Exception as exc:
+                errors.append(f"Hearth Agent connection failed: {exc}")
+            return errors
+
         if not cfg.get_str("hermes.webui_url"):
             errors.append("Hermes WebUI URL is not set (HERMES_WEBUI_URL or Settings).")
         if not cfg.get_str("hermes.webui_password"):
@@ -80,7 +114,9 @@ class HermesIntegration:
         errors = self.connection_errors()
         if errors:
             return IntegrationStatus(False, errors[0], detail=errors)
-        return IntegrationStatus(True, f"Connected to {cfg.get_str('hermes.webui_url')}")
+        if self.provider() == "agent":
+            return IntegrationStatus(True, f"Connected to hearth-agent at {cfg.get_str('hermes.agent_url')}")
+        return IntegrationStatus(True, f"Connected to WebUI {cfg.get_str('hermes.webui_url')}")
 
     def forward_webhook(self, incident: dict[str, Any]) -> tuple[int, bytes]:
         cfg = get_config()
@@ -117,7 +153,6 @@ class HermesIntegration:
         investigate=None,
     ) -> None:
         """Fire-and-forget investigation when auto-triage is enabled."""
-        # Reopened = same incident, new occurrence — always start a fresh chat.
         if event not in ("created", "manual", "reopened"):
             return
         if investigate is None:

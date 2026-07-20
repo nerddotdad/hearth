@@ -61,6 +61,7 @@ export type Incident = {
     notes?: Note[]
     manual?: boolean
     hermes?: Record<string, unknown>
+    sandbox?: Record<string, unknown>
   }
   merged_into_id?: string
 }
@@ -265,4 +266,24 @@ export const api = {
 
   aiopsMemory: () =>
     request<{ ok: boolean; memory: Record<string, string> }>('/api/aiops/memory'),
+
+  getSandbox: (id: string) =>
+    request<Record<string, unknown>>(`/api/incidents/${encodeURIComponent(id)}/sandbox`),
+
+  ensureSandbox: (id: string, rotateToken = false) =>
+    request<Record<string, unknown>>(`/api/incidents/${encodeURIComponent(id)}/sandbox`, {
+      method: 'POST',
+      body: JSON.stringify({ rotate_token: rotateToken }),
+    }),
+
+  destroySandbox: (id: string) =>
+    request<Record<string, unknown>>(`/api/incidents/${encodeURIComponent(id)}/sandbox`, {
+      method: 'DELETE',
+    }),
+
+  sandboxExec: (id: string, command: string, timeout = 120) =>
+    request<Record<string, unknown>>(`/api/incidents/${encodeURIComponent(id)}/sandbox/exec`, {
+      method: 'POST',
+      body: JSON.stringify({ command, timeout }),
+    }),
 }

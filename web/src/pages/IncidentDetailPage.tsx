@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { AgentBadge, SeverityBadge, StatusBadge } from '../components/StatusBadge'
+import { TriageTerminal } from '../components/TriageTerminal'
 import { useAgentSession } from '../hooks/useAgentSession'
 import { api, hermesChatUrl } from '../lib/api/client'
 import {
@@ -182,7 +183,7 @@ export function IncidentDetailPage() {
                 ) : null}
               </>
             ) : null}
-            {openInHermesUrl ? (
+            {openInHermesUrl && String(hermes.provider || '') !== 'agent' ? (
               <a
                 className="icon-btn"
                 href={openInHermesUrl}
@@ -238,6 +239,8 @@ export function IncidentDetailPage() {
           </div>
         ) : null}
       </div>
+
+      <TriageTerminal incidentId={id} />
 
       <div className="panel">
         <h3 style={{ marginTop: 0 }}>Alerts ({(incident.alerts || []).length})</h3>

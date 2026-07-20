@@ -16,9 +16,11 @@ import {
   faMagnifyingGlass,
   faPlus,
   faRobot,
+  faTerminal,
   faTicket,
   faTriangleExclamation,
   faWifi,
+  faXmark,
 } from '@fortawesome/free-solid-svg-icons'
 
 library.add(
@@ -38,9 +40,11 @@ library.add(
   faMagnifyingGlass,
   faPlus,
   faRobot,
+  faTerminal,
   faTicket,
   faTriangleExclamation,
   faWifi,
+  faXmark,
 )
 
 export {
@@ -60,7 +64,9 @@ export {
   faMagnifyingGlass,
   faPlus,
   faRobot,
+  faTerminal,
   faTicket,
   faTriangleExclamation,
   faWifi,
+  faXmark,
 }

@@ -20,6 +20,9 @@ from hermes_client import HermesError
 from incidents import IncidentService, safe_id
 from integrations import init_registry
 from notifications import NotificationService
+from sandbox.mcp import McpHandler
+from sandbox.runtime import init_sandbox_service
+from sandbox.wsutil import accept_key, encode_frame, read_frame
 from ui import (
     PAGE_SIZE,
     alerts_list_page,
@@ -54,6 +57,8 @@ REGISTRY = init_registry()
 STORE = IncidentStore(DB_PATH)
 SERVICE = IncidentService(STORE, INCIDENT_DIR, config=CONFIG)
 NOTIFIER = NotificationService(STORE, CONFIG)
+SANDBOX = init_sandbox_service(STORE, CONFIG)
+MCP = McpHandler(SANDBOX)
 
 
 def _hermes_public_base() -> str:
@@ -327,6 +332,28 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _proxy_hermes_stream(self, stream_id: str, incident_id: str) -> None:
+        # hearth-agent investigations store transcripts on the incident — poll via session API.
+        if stream_id.startswith("agent:"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                import time
+
+                for _ in range(120):
+                    data = SERVICE.get_agent_session(incident_id) or {}
+                    status = str(data.get("status") or "")
+                    payload = json.dumps({"status": status, "messages": data.get("messages") or []})
+                    self.wfile.write(f"event: agent\ndata: {payload}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    if status in ("complete", "error"):
+                        break
+                    time.sleep(2)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
+
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -445,9 +472,34 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": not errors,
                     "enabled": CONFIG.aiops_enabled(),
                     "auto_triage": CONFIG.auto_triage_enabled(),
+                    "provider": hermes.provider(),
                     "connected": hermes.is_connected(),
                     "errors": errors,
                     "env_keys": CONFIG.hydrate_aiops_from_env() if CONFIG.aiops_enabled() else {},
+                },
+            )
+            return
+
+        if path == "/api/aiops/agent-config":
+            # Cluster agents may fetch non-secret config; requires sandbox/agent API key.
+            token = ""
+            auth = self.headers.get("Authorization") or ""
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+            expected = CONFIG.get_str("sandbox.agent_api_key") or CONFIG.get_str("hermes.agent_api_key")
+            if not expected or token != expected:
+                self._json(401, {"error": "unauthorized"})
+                return
+            cluster = (CONFIG.get_str("sandbox.cluster_base_url") or "").rstrip("/")
+            mcp_url = f"{cluster}/mcp" if cluster else None
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "mcp_url": mcp_url,
+                    "provider": REGISTRY.hermes().provider(),
+                    "model": CONFIG.get_str("hermes.agent_model") or "hermes-agent",
+                    "note": "Secrets are never returned — configure MCP Authorization from env.",
                 },
             )
             return
@@ -474,6 +526,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, {"ok": True, "memory": REGISTRY.hermes().client().get_memory()})
             except HermesError as exc:
                 self._json(502, {"error": str(exc), "detail": exc.detail})
+            return
+
+        if path in ("/mcp", "/api/mcp"):
+            self._handle_mcp_get()
+            return
+
+        if path.startswith("/api/incidents/") and path.endswith("/sandbox/terminal"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/sandbox/terminal")].strip("/"))
+            self._proxy_sandbox_terminal(iid)
+            return
+
+        if path.startswith("/api/incidents/") and path.endswith("/sandbox"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/sandbox")].strip("/"))
+            status = SANDBOX.status(iid)
+            if status is None:
+                self._json(404, {"error": "incident not found", "id": iid})
+                return
+            self._json(200, status)
             return
 
         if path == "/alerts":
@@ -1182,6 +1256,62 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, result)
             return
 
+        if path in ("/mcp", "/api/mcp"):
+            self._handle_mcp_post()
+            return
+
+        if path.startswith("/api/incidents/") and path.endswith("/sandbox/exec"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/sandbox/exec")].strip("/"))
+            payload, err = self._read_json_body()
+            if err:
+                self._json(err, {"error": "invalid request"})
+                return
+            command = str((payload or {}).get("command") or "")
+            try:
+                timeout = float((payload or {}).get("timeout") or 120)
+            except (TypeError, ValueError):
+                timeout = 120.0
+            try:
+                result = SANDBOX.exec_command(iid, command, actor="api", timeout=timeout, ensure=True)
+            except ValueError as exc:
+                self._json(404, {"error": str(exc)})
+                return
+            except RuntimeError as exc:
+                self._json(503, {"error": str(exc)})
+                return
+            except Exception as exc:
+                self._json(502, {"error": "sandbox exec failed", "detail": str(exc)})
+                return
+            publish_ui("incidents", incident_id=iid, reason="sandbox_exec")
+            self._json(200, result)
+            return
+
+        if path.startswith("/api/incidents/") and path.endswith("/sandbox"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/sandbox")].strip("/"))
+            payload, err = self._read_json_body()
+            if err == 413:
+                self._json(413, {"error": "payload too large"})
+                return
+            rotate = bool(payload and payload.get("rotate_token"))
+            try:
+                result = SANDBOX.ensure(iid, actor="api", rotate_token=rotate)
+            except ValueError as exc:
+                self._json(404, {"error": str(exc)})
+                return
+            except RuntimeError as exc:
+                self._json(503, {"error": str(exc)})
+                return
+            except Exception as exc:
+                self._json(502, {"error": "sandbox ensure failed", "detail": str(exc)})
+                return
+            publish_ui("incidents", incident_id=iid, reason="sandbox_ensure")
+            self._json(200, result)
+            return
+
         if path.startswith("/api/incidents/") and path.endswith("/notes"):
             if not self._require_api_auth(query):
                 return
@@ -1288,6 +1418,163 @@ class Handler(BaseHTTPRequestHandler):
                 self._redirect(f"{base}/?incident={incident_id}&autostart=1")
                 return
         self._json(200, {"ok": True, "incident_id": incident_id, "hermes": detail})
+
+    def do_DELETE(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        query = parsed.query
+        if path.startswith("/api/incidents/") and path.endswith("/sandbox"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/sandbox")].strip("/"))
+            try:
+                result = SANDBOX.destroy(iid, actor="api")
+            except ValueError as exc:
+                self._json(404, {"error": str(exc)})
+                return
+            publish_ui("incidents", incident_id=iid, reason="sandbox_destroy")
+            self._json(200, result)
+            return
+        self._json(404, {"error": "not found"})
+
+    def _bearer_token(self) -> str:
+        auth = self.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        return (params.get("token") or [""])[0]
+
+    def _handle_mcp_get(self) -> None:
+        """MCP discovery / health for Streamable HTTP clients."""
+        self._json(
+            200,
+            {
+                "ok": True,
+                "service": "hearth-sandbox-mcp",
+                "protocolVersion": "2024-11-05",
+                "tools": [t["name"] for t in __import__("sandbox.mcp", fromlist=["TOOLS"]).TOOLS],
+            },
+        )
+
+    def _handle_mcp_post(self) -> None:
+        payload, err = self._read_json_body()
+        if err:
+            self._json(err, {"error": "invalid request"})
+            return
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "json object required"})
+            return
+        # Support JSON-RPC batch or single
+        if isinstance(payload.get("method"), str) or "id" in payload:
+            result = MCP.handle(payload, bearer_token=self._bearer_token() or None)
+            self._json(200, result)
+            return
+        self._json(400, {"error": "json-rpc request required"})
+
+    def _proxy_sandbox_terminal(self, incident_id: str) -> None:
+        import select
+        import urllib.request
+
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key or (self.headers.get("Upgrade") or "").lower() != "websocket":
+            self._json(400, {"error": "websocket upgrade required"})
+            return
+        try:
+            SANDBOX.ensure(incident_id, actor="ui")
+            agent_url = SANDBOX.agent_url(incident_id)
+            if not agent_url or agent_url.startswith("local://"):
+                self._json(503, {"error": "interactive terminal requires kubernetes sandbox backend"})
+                return
+        except Exception as exc:
+            self._json(502, {"error": "sandbox not ready", "detail": str(exc)})
+            return
+
+        # Client ↔ Hearth WebSocket
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept_key(key))
+        self.end_headers()
+
+        # Hearth ↔ sandbox-agent WebSocket (client role, masked frames)
+        import base64
+        import os
+        import socket
+
+        host_port = agent_url.replace("http://", "").replace("https://", "").rstrip("/")
+        if "/" in host_port:
+            host_port = host_port.split("/", 1)[0]
+        if ":" in host_port:
+            host, port_s = host_port.rsplit(":", 1)
+            port = int(port_s)
+        else:
+            host, port = host_port, 80
+        sock = socket.create_connection((host, port), timeout=30)
+        ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        req = (
+            f"GET /terminal HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            f"Upgrade: websocket\r\n"
+            f"Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            f"Sec-WebSocket-Version: 13\r\n"
+            f"\r\n"
+        )
+        sock.sendall(req.encode("ascii"))
+        # Read HTTP response headers
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        if b"101" not in buf.split(b"\r\n", 1)[0]:
+            try:
+                self.wfile.write(encode_frame(b"sandbox agent upgrade failed\r\n"))
+            except Exception:
+                pass
+            sock.close()
+            return
+
+        try:
+            while True:
+                r, _, _ = select.select([self.rfile, sock], [], [], 60.0)
+                if not r:
+                    continue
+                if self.rfile in r:
+                    opcode, payload = read_frame(self.rfile)
+                    if opcode == 0x8:
+                        break
+                    if opcode in (0x1, 0x2) and payload:
+                        sock.sendall(encode_frame(payload, opcode=opcode, mask=True))
+                if sock in r:
+                    # Read one frame from agent (unmasked server frames)
+                    header = sock.recv(2)
+                    if len(header) < 2:
+                        break
+                    opcode = header[0] & 0x0F
+                    length = header[1] & 0x7F
+                    if length == 126:
+                        length = int.from_bytes(sock.recv(2), "big")
+                    elif length == 127:
+                        length = int.from_bytes(sock.recv(8), "big")
+                    payload = b""
+                    while len(payload) < length:
+                        chunk = sock.recv(length - len(payload))
+                        if not chunk:
+                            break
+                        payload += chunk
+                    if opcode == 0x8:
+                        break
+                    self.wfile.write(encode_frame(payload, opcode=opcode if opcode else 0x2))
+                    self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
     def _take_pending_incident(self) -> str:
         if not PENDING_ID_FILE.is_file():

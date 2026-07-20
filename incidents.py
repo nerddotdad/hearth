@@ -489,6 +489,12 @@ class IncidentService:
         incident = self.store.get_incident(incident_id)
         if incident is None or incident.get("status") == "merged":
             return None
+        try:
+            from sandbox.runtime import get_sandbox_service
+
+            get_sandbox_service().destroy_if_present(incident_id, actor=actor or "system")
+        except Exception:
+            pass
         return self.store.update_incident(
             incident_id,
             status="resolved",
@@ -571,7 +577,7 @@ class IncidentService:
 
         hermes_integ = get_registry().hermes()
         if not hermes_integ.is_enabled():
-            raise HermesError("Hermes integration is disabled")
+            raise HermesError("AIOps integration is disabled")
 
         incident = self.store.get_incident(incident_id)
         if incident is None:
@@ -585,10 +591,31 @@ class IncidentService:
         # Starting a new chat — archive any completed/stale session first.
         if hermes.get("session_id"):
             enrichment = self._archive_hermes_session(enrichment)
+            self.store.update_incident(incident_id, enrichment=enrichment)
 
-        export = self.export_legacy(incident_id)
+        # Ensure triage sandbox (non-secret attach hints only).
+        sandbox_attach: dict[str, Any] | None = None
+        try:
+            from sandbox.runtime import get_sandbox_service
+
+            sb = get_sandbox_service()
+            if sb.enabled():
+                sandbox_attach = sb.attach_context(incident_id, actor=actor)
+        except Exception:
+            sandbox_attach = None
+
+        export = self.export_legacy(incident_id, sandbox_attach=sandbox_attach)
         if export is None:
             raise ValueError("incident not found")
+
+        provider = hermes_integ.provider()
+        if provider == "agent":
+            return self._investigate_via_agent(
+                incident_id,
+                export=export,
+                actor=actor,
+                sandbox_attach=sandbox_attach,
+            )
 
         client = hermes_integ.client()
         session_id = client.new_session()
@@ -597,31 +624,146 @@ class IncidentService:
         stream_id = client.start_chat(session_id, export["hermes_message"])
 
         hermes = {
+            "provider": "webui",
             "session_id": session_id,
             "stream_id": stream_id,
             "status": "running",
             "started_at": utcnow(),
             "started_by": actor,
         }
+        incident = self.store.get_incident(incident_id) or incident
+        enrichment = dict(incident.get("enrichment") or {})
         enrichment["hermes"] = hermes
+        if sandbox_attach and sandbox_attach.get("mcp_url") and isinstance(enrichment.get("sandbox"), dict):
+            enrichment["sandbox"]["mcp_url"] = sandbox_attach.get("mcp_url")
         self.store.update_incident(
             incident_id,
             enrichment=enrichment,
             actor=actor,
             event_type="investigation_started",
-            event_detail={"session_id": session_id},
+            event_detail={"session_id": session_id, "provider": "webui", "sandbox": bool(sandbox_attach)},
         )
         return self._investigate_result(incident_id, hermes)
 
+    def _investigate_via_agent(
+        self,
+        incident_id: str,
+        *,
+        export: dict[str, Any],
+        actor: str,
+        sandbox_attach: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        import threading
+        import uuid
+
+        from agent_client import AgentError
+        from integrations.registry import get_registry
+
+        hermes_integ = get_registry().hermes()
+        conversation = f"incident-{incident_id}"
+        session_id = f"agent-{uuid.uuid4().hex[:12]}"
+        prompt = str(export.get("hermes_message") or "")
+        hermes = {
+            "provider": "agent",
+            "session_id": session_id,
+            "conversation": conversation,
+            "stream_id": f"agent:{session_id}",
+            "status": "running",
+            "started_at": utcnow(),
+            "started_by": actor,
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
+        }
+        incident = self.store.get_incident(incident_id)
+        enrichment = dict((incident or {}).get("enrichment") or {})
+        enrichment["hermes"] = hermes
+        if sandbox_attach and sandbox_attach.get("mcp_url") and isinstance(enrichment.get("sandbox"), dict):
+            enrichment["sandbox"]["mcp_url"] = sandbox_attach.get("mcp_url")
+        self.store.update_incident(
+            incident_id,
+            enrichment=enrichment,
+            actor=actor,
+            event_type="investigation_started",
+            event_detail={"session_id": session_id, "provider": "agent", "sandbox": bool(sandbox_attach)},
+        )
+
+        def _run() -> None:
+            try:
+                client = hermes_integ.agent_client()
+                result = client.responses(
+                    input_text=prompt,
+                    conversation=conversation,
+                    instructions=(
+                        "You are the Hearth incident triage agent. Use Hearth MCP tools "
+                        "for cluster inspection. Never request or emit API keys or bearer tokens."
+                    ),
+                )
+                text = client.extract_assistant_text(result)
+                self._finish_agent_investigation(incident_id, session_id, text, error=None)
+            except AgentError as exc:
+                self._finish_agent_investigation(incident_id, session_id, "", error=str(exc))
+            except Exception as exc:
+                self._finish_agent_investigation(incident_id, session_id, "", error=str(exc))
+
+        threading.Thread(target=_run, name=f"hearth-agent-{incident_id}", daemon=True).start()
+        return self._investigate_result(incident_id, hermes)
+
+    def _finish_agent_investigation(
+        self,
+        incident_id: str,
+        session_id: str,
+        assistant_text: str,
+        *,
+        error: str | None,
+    ) -> None:
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            return
+        enrichment = dict(incident.get("enrichment") or {})
+        hermes = dict(enrichment.get("hermes") or {})
+        if hermes.get("session_id") != session_id:
+            return
+        messages = list(hermes.get("messages") or [])
+        if error:
+            messages.append({"role": "assistant", "content": f"Investigation failed: {error}"})
+            hermes["status"] = "error"
+            hermes["error"] = error
+        else:
+            messages.append({"role": "assistant", "content": assistant_text or "(empty response)"})
+            hermes["status"] = "complete"
+        hermes["messages"] = messages
+        hermes["completed_at"] = utcnow()
+        enrichment["hermes"] = hermes
+        self.store.update_incident(
+            incident_id,
+            enrichment=enrichment,
+            actor="bridge",
+            event_type="investigation_complete" if not error else "investigation_failed",
+            event_detail={"session_id": session_id, "provider": "agent", "error": error},
+        )
+        try:
+            from events import publish_ui
+
+            publish_ui("incidents", incident_id=incident_id, reason="investigate")
+        except Exception:
+            pass
+
     def _investigate_result(self, incident_id: str, hermes: dict[str, Any]) -> dict[str, Any]:
-        base = self.config.get_str("hermes.public_base_url").rstrip("/")
+        provider = str(hermes.get("provider") or self.config.get_str("hermes.provider") or "agent")
         session_id = str(hermes.get("session_id") or "")
+        hermes_url = None
+        if provider == "webui":
+            base = self.config.get_str("hermes.public_base_url").rstrip("/")
+            if base and session_id:
+                hermes_url = f"{base}/?session_id={urllib.parse.quote(session_id)}"
         return {
             "incident_id": incident_id,
             "session_id": session_id,
             "stream_id": hermes.get("stream_id"),
             "status": hermes.get("status"),
-            "hermes_url": f"{base}/?session_id={urllib.parse.quote(session_id)}" if base and session_id else None,
+            "provider": provider,
+            "hermes_url": hermes_url,
         }
 
     def mark_hermes_complete(self, incident_id: str) -> None:
@@ -650,6 +792,17 @@ class IncidentService:
         session_id = str(hermes.get("session_id") or "")
         if not session_id:
             return None
+        provider = str(hermes.get("provider") or "")
+        if provider == "agent" or str(hermes.get("stream_id") or "").startswith("agent:"):
+            return {
+                "session_id": session_id,
+                "status": hermes.get("status"),
+                "stream_id": hermes.get("stream_id"),
+                "provider": "agent",
+                "title": incident.get("title"),
+                "messages": list(hermes.get("messages") or []),
+                "error": hermes.get("error"),
+            }
         try:
             from integrations.registry import get_registry
 
@@ -662,6 +815,7 @@ class IncidentService:
             "session_id": session_id,
             "status": hermes.get("status"),
             "stream_id": hermes.get("stream_id"),
+            "provider": "webui",
             "title": session.get("title") if isinstance(session, dict) else None,
             "messages": self._simplify_messages(messages or []),
         }
@@ -822,7 +976,12 @@ class IncidentService:
         )
         return self.store.get_incident(target_id)
 
-    def export_legacy(self, incident_id: str) -> dict[str, Any] | None:
+    def export_legacy(
+        self,
+        incident_id: str,
+        *,
+        sandbox_attach: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """Shape consumed by Hermes and /homelab/api/incidents/<id>."""
         incident = self.store.get_incident(incident_id)
         if incident is None:
@@ -847,7 +1006,7 @@ class IncidentService:
             "receiver": (incident.get("enrichment") or {}).get("receiver"),
         }
         export["operator_message"] = build_operator_message(incident)
-        export["hermes_message"] = build_hermes_message(incident)
+        export["hermes_message"] = build_hermes_message(incident, sandbox_attach=sandbox_attach)
         return export
 
     def _operator_message(self, incident: dict[str, Any]) -> str:

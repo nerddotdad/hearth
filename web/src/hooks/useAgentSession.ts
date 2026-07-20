@@ -63,9 +63,11 @@ export function useAgentSession(
     if (streamId && hermesStatus === 'running') {
       setStatusText('Streaming agent response…')
       source = new EventSource(api.agentStreamUrl(incidentId, streamId))
-      source.onmessage = () => {
+      const onUpdate = () => {
         void refreshSession()
       }
+      source.onmessage = onUpdate
+      source.addEventListener('agent', onUpdate)
       source.addEventListener('end', () => {
         source?.close()
         void refreshSession()
@@ -73,6 +75,12 @@ export function useAgentSession(
       source.onerror = () => {
         source?.close()
         void refreshSession()
+      }
+      // hearth-agent stores messages on the incident — poll while streaming.
+      if (streamId.startsWith('agent:')) {
+        pollTimer = window.setInterval(() => {
+          void refreshSession()
+        }, 2000)
       }
     } else {
       pollTimer = window.setInterval(() => {

@@ -316,6 +316,142 @@ FIELD_DEFS: list[FieldDef] = [
         "Webhook secret (legacy)",
         secret=True,
     ),
+    FieldDef(
+        "hermes.provider",
+        "HEARTH_AIOPS_PROVIDER",
+        "agent",
+        "str",
+        "hermes",
+        "AIOps provider",
+        "agent (hearth-agent / Hermes core) or webui (Hermes WebUI fallback)",
+    ),
+    FieldDef(
+        "hermes.agent_url",
+        "HEARTH_AGENT_URL",
+        "",
+        "str",
+        "hermes",
+        "Hearth Agent URL",
+        "In-cluster Hermes Agent API base (e.g. http://hearth-agent.ai.svc:8642)",
+    ),
+    FieldDef(
+        "hermes.agent_api_key",
+        "HEARTH_AGENT_API_KEY",
+        "",
+        "secret",
+        "hermes",
+        "Hearth Agent API key",
+        "Bearer for hearth-agent OpenAI-compatible API (never put in chat)",
+        secret=True,
+    ),
+    FieldDef(
+        "hermes.agent_model",
+        "HEARTH_AGENT_MODEL",
+        "hermes-agent",
+        "str",
+        "hermes",
+        "Agent model id",
+        "Passed to /v1/chat/completions as model",
+    ),
+    # Triage sandbox (LLM-agnostic tool runtime)
+    FieldDef(
+        "sandbox.enabled",
+        "HEARTH_SANDBOX_ENABLED",
+        True,
+        "bool",
+        "sandbox",
+        "Enable sandbox",
+        "Incident-scoped triage environment for humans and agents",
+    ),
+    FieldDef(
+        "sandbox.backend",
+        "HEARTH_SANDBOX_BACKEND",
+        "auto",
+        "str",
+        "sandbox",
+        "Backend",
+        "auto | kubernetes | local",
+    ),
+    FieldDef(
+        "sandbox.namespace",
+        "HEARTH_SANDBOX_NAMESPACE",
+        "hearth-sandboxes",
+        "str",
+        "sandbox",
+        "Sandbox namespace",
+        "Kubernetes namespace for ephemeral triage pods",
+    ),
+    FieldDef(
+        "sandbox.image",
+        "HEARTH_SANDBOX_IMAGE",
+        "ghcr.io/nerddotdad/hearth-sandbox:0.1.0",
+        "str",
+        "sandbox",
+        "Sandbox image",
+    ),
+    FieldDef(
+        "sandbox.service_account",
+        "HEARTH_SANDBOX_SERVICE_ACCOUNT",
+        "hearth-sandbox",
+        "str",
+        "sandbox",
+        "Sandbox ServiceAccount",
+        "Mounted into triage pods for read-only kubectl/flux",
+    ),
+    FieldDef(
+        "sandbox.ttl_seconds",
+        "HEARTH_SANDBOX_TTL_SECONDS",
+        3600,
+        "int",
+        "sandbox",
+        "Idle TTL (seconds)",
+        "Sandbox expires after this much idle time",
+    ),
+    FieldDef(
+        "sandbox.agent_port",
+        "HEARTH_SANDBOX_AGENT_PORT",
+        8080,
+        "int",
+        "sandbox",
+        "Agent port",
+    ),
+    FieldDef(
+        "sandbox.cluster_base_url",
+        "HEARTH_SANDBOX_CLUSTER_BASE_URL",
+        "",
+        "str",
+        "sandbox",
+        "In-cluster Hearth URL",
+        "Used in agent MCP attach (e.g. http://hearth.observability.svc:8000)",
+    ),
+    FieldDef(
+        "sandbox.public_base_url",
+        "HEARTH_SANDBOX_PUBLIC_BASE_URL",
+        "",
+        "str",
+        "sandbox",
+        "Public MCP base URL",
+        "Defaults to INCIDENTS_PUBLIC_BASE_URL",
+    ),
+    FieldDef(
+        "sandbox.agent_api_key",
+        "HEARTH_SANDBOX_AGENT_API_KEY",
+        "",
+        "secret",
+        "sandbox",
+        "Global agent API key",
+        "Optional bearer for MCP when not using an incident token",
+        secret=True,
+    ),
+    FieldDef(
+        "sandbox.tool_packs",
+        "HEARTH_SANDBOX_TOOL_PACKS",
+        ["shell", "k8s-readonly", "network"],
+        "string_list",
+        "sandbox",
+        "Tool packs",
+        "Comma-separated: shell, k8s-readonly, network",
+    ),
 ]
 
 # Env aliases: primary FieldDef.env plus these extras also lock/source the field.
@@ -446,6 +582,13 @@ class ConfigStore:
     def get_bool(self, key: str) -> bool:
         return bool(self.get(key))
 
+    def get_int(self, key: str) -> int:
+        value = self.get(key)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
     def is_locked(self, key: str) -> bool:
         return self.field_source(key) == "env"
 
@@ -561,8 +704,12 @@ class ConfigStore:
             hints.append("Prometheus ingest is disabled — enable it under Settings → Integrations.")
         if self.get_bool("ntfy.enabled") and not self.get_str("ntfy.base_url"):
             hints.append("Connect ntfy under Settings → Integrations to receive push notifications.")
-        if self.aiops_enabled() and not self.get_str("hermes.webui_url"):
-            hints.append("AIOps is enabled but Hermes WebUI URL is missing — fix Settings → AIOps.")
+        if self.aiops_enabled():
+            provider = (self.get_str("hermes.provider") or "agent").strip().lower()
+            if provider == "webui" and not self.get_str("hermes.webui_url"):
+                hints.append("AIOps WebUI provider selected but Hermes WebUI URL is missing — fix Settings → AIOps.")
+            if provider != "webui" and not self.get_str("hermes.agent_url"):
+                hints.append("AIOps agent provider selected but Hearth Agent URL is missing — fix Settings → AIOps.")
         return hints
 
 

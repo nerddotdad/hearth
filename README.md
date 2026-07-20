@@ -95,13 +95,19 @@ Incident and alert lists load **25 rows at a time** with **infinite scroll**. Se
 **List APIs:** `GET /api/list/incidents`, `GET /api/list/alerts` — params: `offset`, `limit`, `status`, `q`.  
 **Settings API:** `GET/POST /api/settings`, `POST /api/settings/test/<id>`.
 
-## Agent investigations (Hermes)
+## Agent investigations (AIOps)
+
+Default provider: **hearth-agent sidecar** (Hermes Agent core in the same pod). Set `HEARTH_AIOPS_PROVIDER=webui` only for Hermes WebUI fallback.
 
 ```text
-Investigate → Hermes session/new + chat/start
-           → Agent panel (SSE proxy + session poll)
-Open in Hermes → https://hermes.<domain>/?session_id=<id>
+Investigate → ensure sandbox → localhost:8642 /v1/responses
+           → Agent panel (messages on incident; no secrets in prompt)
+Sandbox MCP ← agent env HEARTH_SANDBOX_AGENT_API_KEY → localhost:8000/mcp
 ```
+
+See [Hearth Agent](https://nerd.dad/latest/homelab/kubernetes/my-apps/observability/mk_hearth-agent/) and [sandbox](https://nerd.dad/latest/homelab/kubernetes/my-apps/observability/mk_hearth-sandbox/).
+
+Sandbox image: `sandbox-image/` → `ghcr.io/nerddotdad/hearth-sandbox` (workflow **Build Sandbox Image**).
 
 Built by **Build Image** (`.github/workflows/build-image.yml`) on push to `main` or manual **workflow_dispatch**.
 
