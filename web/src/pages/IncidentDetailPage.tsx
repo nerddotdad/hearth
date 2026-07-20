@@ -2,14 +2,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { Icon } from '../components/Icon'
-import { SeverityBadge, StatusBadge } from '../components/StatusBadge'
+import { AgentBadge, SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { useAgentSession } from '../hooks/useAgentSession'
 import { api, hermesChatUrl } from '../lib/api/client'
 import {
   faArrowUpRightFromSquare,
+  faArrowsRotate,
   faCircleCheck,
+  faEye,
   faRobot,
-  faRotate,
 } from '../lib/icons'
 
 export function IncidentDetailPage() {
@@ -96,21 +97,40 @@ export function IncidentDetailPage() {
             <div className="muted mono">
               {incident.id} · updated {incident.updated_at || '—'}
             </div>
-            <div style={{ marginTop: 8 }} className="actions">
+            <div style={{ marginTop: 8 }} className="row-meta">
               <StatusBadge status={incident.status} />
               <SeverityBadge severity={incident.severity} />
-              {incident.enrichment?.manual ? <span className="badge">manual</span> : null}
+              <AgentBadge status={String(hermes.status || '')} />
+              {incident.enrichment?.manual ? (
+                <span className="icon-badge" title="Manual incident" aria-label="Manual incident">
+                  M
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="actions">
             {status === 'open' ? (
-              <button className="primary" type="button" onClick={() => ack.mutate()} disabled={ack.isPending}>
-                <Icon icon={faRotate} /> Acknowledge
+              <button
+                className="icon-btn primary"
+                type="button"
+                title="Acknowledge"
+                aria-label="Acknowledge"
+                onClick={() => ack.mutate()}
+                disabled={ack.isPending}
+              >
+                <Icon icon={faEye} label="Acknowledge" />
               </button>
             ) : null}
             {status === 'open' || status === 'acknowledged' ? (
-              <button type="button" onClick={() => resolve.mutate()} disabled={resolve.isPending}>
-                <Icon icon={faCircleCheck} /> Resolve
+              <button
+                className="icon-btn"
+                type="button"
+                title="Resolve"
+                aria-label="Resolve"
+                onClick={() => resolve.mutate()}
+                disabled={resolve.isPending}
+              >
+                <Icon icon={faCircleCheck} label="Resolve" />
               </button>
             ) : null}
           </div>
@@ -139,27 +159,39 @@ export function IncidentDetailPage() {
             {hermesEnabled ? (
               <>
                 <button
-                  className="primary"
+                  className="icon-btn primary"
                   type="button"
+                  title="Investigate"
+                  aria-label="Investigate"
                   onClick={() => investigate.mutate(false)}
                   disabled={investigate.isPending}
                 >
-                  <Icon icon={faRobot} /> Investigate
+                  <Icon icon={faRobot} label="Investigate" spin={investigate.isPending} />
                 </button>
                 {sessionId ? (
                   <button
+                    className="icon-btn"
                     type="button"
+                    title="New investigation"
+                    aria-label="New investigation"
                     onClick={() => investigate.mutate(true)}
                     disabled={investigate.isPending}
                   >
-                    New investigation
+                    <Icon icon={faArrowsRotate} label="New investigation" />
                   </button>
                 ) : null}
               </>
             ) : null}
             {openInHermesUrl ? (
-              <a className="btn" href={openInHermesUrl} target="_blank" rel="noopener noreferrer">
-                <Icon icon={faArrowUpRightFromSquare} /> Open in Hermes
+              <a
+                className="icon-btn"
+                href={openInHermesUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open in Hermes"
+                aria-label="Open in Hermes"
+              >
+                <Icon icon={faArrowUpRightFromSquare} label="Open in Hermes" />
               </a>
             ) : null}
           </div>

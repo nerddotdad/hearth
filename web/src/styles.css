@@ -50,7 +50,8 @@ select {
 }
 
 button,
-.btn {
+.btn,
+a.icon-btn {
   appearance: none;
   border: 1px solid var(--border);
   background: var(--panel-2);
@@ -63,15 +64,19 @@ button,
   justify-content: center;
   min-height: 38px;
   gap: 6px;
+  text-decoration: none;
 }
 
 button:hover,
-.btn:hover {
+.btn:hover,
+a.icon-btn:hover {
   border-color: var(--accent);
+  text-decoration: none;
 }
 
 button.primary,
-.btn.primary {
+.btn.primary,
+a.icon-btn.primary {
   background: color-mix(in srgb, var(--accent) 25%, var(--panel-2));
   border-color: var(--accent);
 }
@@ -146,15 +151,13 @@ textarea {
 .live-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 4px 10px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 600;
 }
 
 .live-pill.live-live {
@@ -177,13 +180,13 @@ textarea {
 .site-nav a {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 6px 12px;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
   border-radius: 10px;
   color: var(--muted);
   text-decoration: none;
-  font-weight: 500;
   border: 1px solid transparent;
 }
 
@@ -221,65 +224,102 @@ textarea {
   border-color: var(--accent);
 }
 
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
+.icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 6px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.icon-badge .count {
   font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
-.badge.status-open {
-  color: var(--warn);
-  border-color: color-mix(in srgb, var(--warn) 50%, var(--border));
-}
-.badge.status-acknowledged {
-  color: var(--accent);
-}
-.badge.status-resolved {
-  color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 50%, var(--border));
-}
-.badge.status-firing {
-  color: var(--crit);
-  border-color: color-mix(in srgb, var(--crit) 50%, var(--border));
-}
-.badge.severity-critical {
-  color: var(--crit);
-}
-.badge.severity-warning {
+.icon-badge.status-open {
   color: var(--warn);
 }
-.badge.severity-info {
+.icon-badge.status-acknowledged {
   color: var(--accent);
 }
-
-.badge.agent-running {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  animation: agent-pulse 1.6s ease-in-out infinite;
-}
-
-.badge.agent-complete {
+.icon-badge.status-resolved {
   color: var(--ok);
-  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
 }
-
-.badge.agent-other {
+.icon-badge.status-firing {
+  color: var(--crit);
+}
+.icon-badge.severity-critical {
+  color: var(--crit);
+}
+.icon-badge.severity-warning {
+  color: var(--warn);
+}
+.icon-badge.severity-info {
+  color: var(--accent);
+}
+.icon-badge.severity-unknown,
+.icon-badge.status-unknown,
+.icon-badge.agent-other {
   color: var(--muted);
 }
 
-@keyframes agent-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.55;
-  }
+.icon-badge.agent-running {
+  color: var(--accent);
+}
+
+.icon-badge.agent-complete {
+  color: var(--ok);
+}
+
+.icon-btn {
+  width: 38px;
+  min-width: 38px;
+  padding: 0;
+  gap: 4px;
+}
+
+.icon-btn .count {
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.icon-btn.primary {
+  background: color-mix(in srgb, var(--accent) 25%, var(--panel-2));
+  border-color: var(--accent);
+}
+
+.page-toolbar .icon-btn.active {
+  background: color-mix(in srgb, var(--accent) 22%, var(--panel-2));
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.search-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.search-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
 }
 
 .grid {
@@ -289,7 +329,7 @@ textarea {
 
 .incident-row {
   display: grid;
-  grid-template-columns: 1.5fr 0.7fr 0.7fr 0.9fr auto;
+  grid-template-columns: minmax(0, 1.6fr) auto minmax(7rem, 0.8fr) auto;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;

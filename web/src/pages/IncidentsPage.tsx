@@ -2,15 +2,26 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Icon } from '../components/Icon'
-import { AgentBadge, SeverityBadge, StatusBadge } from '../components/StatusBadge'
+import {
+  AgentBadge,
+  AlertCountBadge,
+  SeverityBadge,
+  StatusBadge,
+} from '../components/StatusBadge'
 import { api } from '../lib/api/client'
-import { faMagnifyingGlass } from '../lib/icons'
+import {
+  faCircleCheck,
+  faCircleExclamation,
+  faEye,
+  faLayerGroup,
+  faMagnifyingGlass,
+} from '../lib/icons'
 
 const STATUSES = [
-  { value: '', label: 'all' },
-  { value: 'open', label: 'open' },
-  { value: 'acknowledged', label: 'acknowledged' },
-  { value: 'resolved', label: 'resolved' },
+  { value: '', tip: 'All incidents', icon: faLayerGroup },
+  { value: 'open', tip: 'Open', icon: faCircleExclamation },
+  { value: 'acknowledged', tip: 'Acknowledged', icon: faEye },
+  { value: 'resolved', tip: 'Resolved', icon: faCircleCheck },
 ]
 
 export function IncidentsPage() {
@@ -36,26 +47,22 @@ export function IncidentsPage() {
       <div className="page-toolbar">
         {STATUSES.map((s) => (
           <button
-            key={s.label}
+            key={s.value || 'all'}
             type="button"
-            className={status === s.value ? 'active' : undefined}
+            className={`icon-btn ${status === s.value ? 'active' : ''}`}
+            title={s.tip}
+            aria-label={s.tip}
+            aria-pressed={status === s.value}
             onClick={() => setStatus(s.value)}
           >
-            {s.label}
+            <Icon icon={s.icon} label={s.tip} />
           </button>
         ))}
       </div>
 
       <div className="panel">
-        <label htmlFor="incident-search">
-          <strong>Search</strong>{' '}
-          <span className="muted">
-            JQL-style, e.g. <code>status:open severity&gt;=warning title~&quot;flux&quot;</code>
-          </span>
-        </label>
         <form
-          className="grid"
-          style={{ marginTop: 8 }}
+          className="search-row"
           onSubmit={(e) => {
             e.preventDefault()
             setSearch(q.trim())
@@ -66,23 +73,25 @@ export function IncidentsPage() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder='status:open severity>=warning title~"flux"'
+            aria-label="Search incidents"
           />
-          <div className="actions">
-            <button className="primary" type="submit">
-              <Icon icon={faMagnifyingGlass} /> Search
+          <button className="icon-btn primary" type="submit" title="Search" aria-label="Search">
+            <Icon icon={faMagnifyingGlass} label="Search" />
+          </button>
+          {search ? (
+            <button
+              type="button"
+              className="icon-btn"
+              title="Clear search"
+              aria-label="Clear search"
+              onClick={() => {
+                setQ('')
+                setSearch('')
+              }}
+            >
+              Clear
             </button>
-            {search ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setQ('')
-                  setSearch('')
-                }}
-              >
-                Clear
-              </button>
-            ) : null}
-          </div>
+          ) : null}
         </form>
       </div>
 
@@ -99,13 +108,15 @@ export function IncidentsPage() {
                 <div className="row-title">{inc.title || inc.id}</div>
                 <div className="muted mono">{inc.id}</div>
               </div>
-              <div className="actions" style={{ gap: 6 }}>
+              <div className="row-meta">
                 <StatusBadge status={inc.status} />
+                <SeverityBadge severity={inc.severity} />
                 <AgentBadge status={agentStatus} />
               </div>
-              <SeverityBadge severity={inc.severity} />
-              <div className="muted">{inc.updated_at || '—'}</div>
-              <div className="muted">{(inc.alerts || []).length} alerts</div>
+              <div className="muted" title={inc.updated_at || undefined}>
+                {inc.updated_at || '—'}
+              </div>
+              <AlertCountBadge count={(inc.alerts || []).length} />
             </Link>
           )
         })}
@@ -121,9 +132,6 @@ export function IncidentsPage() {
             {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
           </button>
         ) : null}
-        <span className="muted">
-          {query.isFetching && !query.isFetchingNextPage ? 'Refreshing…' : null}
-        </span>
       </div>
     </>
   )

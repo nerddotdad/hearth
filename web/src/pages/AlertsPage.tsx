@@ -4,12 +4,18 @@ import { useNavigate } from 'react-router-dom'
 import { Icon } from '../components/Icon'
 import { SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { api, type Alert } from '../lib/api/client'
-import { faFire, faTicket } from '../lib/icons'
+import {
+  faCircleCheck,
+  faFire,
+  faLayerGroup,
+  faMagnifyingGlass,
+  faTicket,
+} from '../lib/icons'
 
 const STATUSES = [
-  { value: '', label: 'all' },
-  { value: 'firing', label: 'firing' },
-  { value: 'resolved', label: 'resolved' },
+  { value: '', tip: 'All alerts', icon: faLayerGroup },
+  { value: 'firing', tip: 'Firing', icon: faFire },
+  { value: 'resolved', tip: 'Resolved', icon: faCircleCheck },
 ]
 
 function alertTitle(alert: Alert): string {
@@ -60,29 +66,43 @@ export function AlertsPage() {
     })
   }
 
+  const raiseTip =
+    selected.size === 0
+      ? 'Select alerts to raise'
+      : `Raise incident from ${selected.size} alert${selected.size === 1 ? '' : 's'}`
+
   return (
     <>
       <div className="page-toolbar">
         {STATUSES.map((s) => (
           <button
-            key={s.label}
+            key={s.value || 'all'}
             type="button"
-            className={status === s.value ? 'active' : undefined}
+            className={`icon-btn ${status === s.value ? 'active' : ''}`}
+            title={s.tip}
+            aria-label={s.tip}
+            aria-pressed={status === s.value}
             onClick={() => setStatus(s.value)}
           >
-            {s.label}
+            <Icon icon={s.icon} label={s.tip} />
           </button>
         ))}
+        <button
+          className="icon-btn primary"
+          type="button"
+          disabled={!selected.size || raise.isPending}
+          title={raiseTip}
+          aria-label={raiseTip}
+          onClick={() => raise.mutate()}
+        >
+          <Icon icon={faTicket} label={raiseTip} />
+          {selected.size ? <span className="count">{selected.size}</span> : null}
+        </button>
       </div>
-
-      <p className="muted">
-        Alertmanager → <strong>alerts inbox</strong> → raise incident (manual or auto-raise rules in
-        Settings).
-      </p>
 
       <div className="panel">
         <form
-          className="grid"
+          className="search-row"
           onSubmit={(e) => {
             e.preventDefault()
             setSearch(q.trim())
@@ -92,20 +112,11 @@ export function AlertsPage() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder='status:firing alertname:Homelab* text~"disk"'
+            aria-label="Search alerts"
           />
-          <div className="actions">
-            <button className="primary" type="submit">
-              Search
-            </button>
-            <button
-              className="primary"
-              type="button"
-              disabled={!selected.size || raise.isPending}
-              onClick={() => raise.mutate()}
-            >
-              <Icon icon={faTicket} /> Raise incident ({selected.size})
-            </button>
-          </div>
+          <button className="icon-btn primary" type="submit" title="Search" aria-label="Search">
+            <Icon icon={faMagnifyingGlass} label="Search" />
+          </button>
         </form>
       </div>
 
@@ -133,11 +144,10 @@ export function AlertsPage() {
                   <div className="muted mono">{fp || 'no fingerprint'}</div>
                 </div>
               </div>
-              <StatusBadge status={alert.status} />
-              <span className="actions">
-                {(alert.status || '').toLowerCase() === 'firing' ? <Icon icon={faFire} /> : null}
+              <div className="row-meta">
+                <StatusBadge status={alert.status} />
                 <SeverityBadge severity={alertSeverity(alert)} />
-              </span>
+              </div>
               <div className="muted">{alert.updated_at || alert.startsAt || '—'}</div>
               <div className="muted">{alert.labels?.namespace || ''}</div>
             </label>

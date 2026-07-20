@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { api, type SettingsField } from '../lib/api/client'
-import { faFloppyDisk } from '../lib/icons'
+import { faFloppyDisk, faWifi } from '../lib/icons'
 
 type Tab = 'general' | 'integrations' | 'aiops' | 'auto-raise' | 'display'
 
@@ -216,8 +216,10 @@ export function SettingsPage() {
             ))}
             <div className="actions">
               <button
-                className="primary"
+                className="icon-btn primary"
                 type="button"
+                title="Save general"
+                aria-label="Save general"
                 onClick={() =>
                   saveKeys([
                     'core.incidents_public_base_url',
@@ -228,7 +230,7 @@ export function SettingsPage() {
                   ])
                 }
               >
-                <Icon icon={faFloppyDisk} /> Save general
+                <Icon icon={faFloppyDisk} label="Save general" />
               </button>
             </div>
           </div>
@@ -252,16 +254,24 @@ export function SettingsPage() {
               />
               <div className="actions">
                 <button
-                  className="primary"
+                  className="icon-btn primary"
                   type="button"
+                  title="Save Prometheus"
+                  aria-label="Save Prometheus"
                   onClick={() =>
                     saveKeys(['prometheus.enabled', 'prometheus.ignored_alertnames'])
                   }
                 >
-                  Save Prometheus
+                  <Icon icon={faFloppyDisk} label="Save Prometheus" />
                 </button>
-                <button type="button" onClick={() => test.mutate('prometheus')}>
-                  Test connection
+                <button
+                  className="icon-btn"
+                  type="button"
+                  title="Test Prometheus"
+                  aria-label="Test Prometheus"
+                  onClick={() => test.mutate('prometheus')}
+                >
+                  <Icon icon={faWifi} label="Test Prometheus" />
                 </button>
               </div>
             </div>
@@ -284,16 +294,24 @@ export function SettingsPage() {
               ))}
               <div className="actions">
                 <button
-                  className="primary"
+                  className="icon-btn primary"
                   type="button"
+                  title="Save ntfy"
+                  aria-label="Save ntfy"
                   onClick={() =>
                     saveKeys(['ntfy.enabled', 'ntfy.base_url', 'ntfy.topic', 'ntfy.public_url'])
                   }
                 >
-                  Save ntfy
+                  <Icon icon={faFloppyDisk} label="Save ntfy" />
                 </button>
-                <button type="button" onClick={() => test.mutate('ntfy')}>
-                  Test connection
+                <button
+                  className="icon-btn"
+                  type="button"
+                  title="Test ntfy"
+                  aria-label="Test ntfy"
+                  onClick={() => test.mutate('ntfy')}
+                >
+                  <Icon icon={faWifi} label="Test ntfy" />
                 </button>
               </div>
             </div>
@@ -347,8 +365,10 @@ export function SettingsPage() {
             ))}
             <div className="actions">
               <button
-                className="primary"
+                className="icon-btn primary"
                 type="button"
+                title="Save AIOps"
+                aria-label="Save AIOps"
                 onClick={() =>
                   saveKeys([
                     'hermes.enabled',
@@ -360,10 +380,16 @@ export function SettingsPage() {
                   ])
                 }
               >
-                Save AIOps
+                <Icon icon={faFloppyDisk} label="Save AIOps" />
               </button>
-              <button type="button" onClick={() => test.mutate('hermes')}>
-                Test connection
+              <button
+                className="icon-btn"
+                type="button"
+                title="Test Hermes"
+                aria-label="Test Hermes"
+                onClick={() => test.mutate('hermes')}
+              >
+                <Icon icon={faWifi} label="Test Hermes" />
               </button>
             </div>
           </div>
@@ -420,8 +446,10 @@ export function SettingsPage() {
             />
             <div className="actions">
               <button
-                className="primary"
+                className="icon-btn primary"
                 type="button"
+                title="Save auto-raise"
+                aria-label="Save auto-raise"
                 onClick={() =>
                   saveKeys([
                     'auto_raise.enabled',
@@ -432,7 +460,7 @@ export function SettingsPage() {
                   ])
                 }
               >
-                Save auto-raise
+                <Icon icon={faFloppyDisk} label="Save auto-raise" />
               </button>
             </div>
           </div>
@@ -450,11 +478,13 @@ export function SettingsPage() {
             />
             <div className="actions">
               <button
-                className="primary"
+                className="icon-btn primary"
                 type="button"
+                title="Save display"
+                aria-label="Save display"
                 onClick={() => saveKeys(['display.show_noise'])}
               >
-                Save display
+                <Icon icon={faFloppyDisk} label="Save display" />
               </button>
             </div>
           </div>

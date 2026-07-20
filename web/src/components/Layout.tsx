@@ -12,12 +12,18 @@ import { Icon } from './Icon'
 const links = [
   { to: '/', label: 'Incidents', end: true, icon: faTicket },
   { to: '/alerts', label: 'Alerts', icon: faBell },
-  { to: '/incidents/new', label: 'New', icon: faPlus },
+  { to: '/incidents/new', label: 'New incident', icon: faPlus },
   { to: '/settings', label: 'Settings', icon: faGear },
 ]
 
 export function Layout() {
   const live = useLiveUpdates()
+  const liveTip =
+    live === 'live'
+      ? 'Live updates connected'
+      : live === 'reconnect'
+        ? 'Reconnecting live updates…'
+        : 'Connecting live updates…'
 
   return (
     <div className="wrap">
@@ -31,9 +37,8 @@ export function Layout() {
           <div className="muted">Homelab incident desk</div>
         </div>
         <div className="header-right">
-          <span className={`live-pill live-${live}`} title="Server-sent live updates">
-            <Icon icon={faWifi} />
-            {live === 'live' ? 'Live' : live === 'reconnect' ? 'Reconnecting…' : 'Connecting…'}
+          <span className={`live-pill live-${live}`} title={liveTip} aria-label={liveTip}>
+            <Icon icon={faWifi} label={liveTip} />
           </span>
           <nav className="site-nav" aria-label="Primary">
             {links.map((link) => (
@@ -41,10 +46,11 @@ export function Layout() {
                 key={link.to}
                 to={link.to}
                 end={link.end}
+                title={link.label}
+                aria-label={link.label}
                 className={({ isActive }) => (isActive ? 'active' : undefined)}
               >
-                <Icon icon={link.icon} />
-                {link.label}
+                <Icon icon={link.icon} label={link.label} />
               </NavLink>
             ))}
           </nav>
