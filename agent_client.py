@@ -133,6 +133,96 @@ class HearthAgentClient:
         except urllib.error.URLError as exc:
             raise AgentError(f"hearth-agent unreachable: {exc.reason}") from exc
 
+    def iter_assistant_stream(
+        self,
+        *,
+        input_text: str,
+        conversation: str,
+        instructions: str | None = None,
+        timeout: int = 600,
+    ) -> Iterator[str]:
+        """Yield assistant text deltas while Hermes runs (tools + final answer).
+
+        Prefers streaming ``/v1/responses``; falls back to streaming chat
+        completions, then to a single blocking ``responses()`` call.
+        """
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "input": input_text,
+            "conversation": conversation,
+            "store": True,
+            "stream": True,
+        }
+        if instructions:
+            payload["instructions"] = instructions
+        data = json.dumps(payload).encode("utf-8")
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        req = urllib.request.Request(
+            f"{self.base}/v1/responses",
+            data=data,
+            method="POST",
+            headers=headers,
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code in (404, 405, 400, 422):
+                # Stream unsupported — try chat stream, then blocking responses.
+                yield from self.iter_chat_stream(
+                    [
+                        *([{"role": "system", "content": instructions}] if instructions else []),
+                        {"role": "user", "content": input_text},
+                    ],
+                    timeout=timeout,
+                )
+                return
+            raise AgentError("responses stream failed", status=exc.code, detail=body[:800]) from exc
+        except urllib.error.URLError as exc:
+            raise AgentError(f"hearth-agent unreachable: {exc.reason}") from exc
+
+        try:
+            while True:
+                line = resp.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text or text.startswith(":") or not text.startswith("data:"):
+                    continue
+                data_s = text[5:].strip()
+                if data_s in ("[DONE]", "done"):
+                    break
+                try:
+                    event = json.loads(data_s)
+                except json.JSONDecodeError:
+                    continue
+                delta = self._stream_event_text(event)
+                if delta:
+                    yield delta
+        finally:
+            resp.close()
+
+    @staticmethod
+    def _stream_event_text(event: dict[str, Any]) -> str:
+        """Extract assistant text from OpenAI/Hermes SSE event payloads."""
+        if not isinstance(event, dict):
+            return ""
+        etype = str(event.get("type") or "")
+        if etype in ("response.output_text.delta", "response.text.delta"):
+            return str(event.get("delta") or "")
+        delta = event.get("delta")
+        if isinstance(delta, dict) and delta.get("content"):
+            return str(delta.get("content") or "")
+        if isinstance(delta, str):
+            return delta
+        choices = event.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            part = choices[0].get("delta") or {}
+            if isinstance(part, dict) and part.get("content"):
+                return str(part.get("content") or "")
+        return ""
+
     @staticmethod
     def extract_assistant_text(result: dict[str, Any]) -> str:
         # chat.completion shape

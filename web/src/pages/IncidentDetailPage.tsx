@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { AgentMarkdown } from '../components/AgentMarkdown'
 import { Icon } from '../components/Icon'
 import { AgentBadge, SeverityBadge, StatusBadge } from '../components/StatusBadge'
 import { TriageTerminal } from '../components/TriageTerminal'
@@ -11,6 +12,7 @@ import {
   faArrowsRotate,
   faCircleCheck,
   faEye,
+  faPaperPlane,
   faRobot,
 } from '../lib/icons'
 
@@ -18,6 +20,8 @@ export function IncidentDetailPage() {
   const { id = '' } = useParams()
   const qc = useQueryClient()
   const [note, setNote] = useState('')
+  const [chatDraft, setChatDraft] = useState('')
+  const feedEndRef = useRef<HTMLDivElement | null>(null)
 
   const query = useQuery({
     queryKey: ['incident', id],
@@ -44,7 +48,14 @@ export function IncidentDetailPage() {
     return Boolean(field.raw_value ?? field.value)
   }, [settings.data])
 
+  const agentProvider = useMemo(() => {
+    const field = settings.data?.groups?.hermes?.find((f) => f.key === 'hermes.provider')
+    const fromSettings = field ? String(field.value || field.raw_value || '') : ''
+    return String(hermes.provider || fromSettings || 'agent')
+  }, [settings.data, hermes.provider])
+
   const openInHermesUrl = hermesChatUrl(hermesBase, hermes.session_id as string | undefined)
+  const agentBusy = String(hermes.status || '') === 'running'
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: ['incident', id] })
@@ -63,6 +74,13 @@ export function IncidentDetailPage() {
     mutationFn: (force: boolean) => api.investigate(id, force),
     onSuccess: invalidate,
   })
+  const chat = useMutation({
+    mutationFn: (message: string) => api.agentChat(id, message),
+    onSuccess: () => {
+      setChatDraft('')
+      invalidate()
+    },
+  })
   const addNote = useMutation({
     mutationFn: () => api.addNote(id, note),
     onSuccess: () => {
@@ -70,6 +88,10 @@ export function IncidentDetailPage() {
       invalidate()
     },
   })
+
+  useEffect(() => {
+    feedEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [agent.messages.length, agent.messages[agent.messages.length - 1]?.content])
 
   if (query.isLoading) {
     return <div className="panel muted">Loading incident…</div>
@@ -155,7 +177,7 @@ export function IncidentDetailPage() {
             alignItems: 'center',
           }}
         >
-          <h3 style={{ margin: 0 }}>Agent</h3>
+          <h3 style={{ margin: 0 }}>Incident agent</h3>
           <div className="actions">
             {hermesEnabled ? (
               <>
@@ -165,7 +187,7 @@ export function IncidentDetailPage() {
                   title="Investigate"
                   aria-label="Investigate"
                   onClick={() => investigate.mutate(false)}
-                  disabled={investigate.isPending}
+                  disabled={investigate.isPending || agentBusy}
                 >
                   <Icon icon={faRobot} label="Investigate" spin={investigate.isPending} />
                 </button>
@@ -176,14 +198,14 @@ export function IncidentDetailPage() {
                     title="New investigation"
                     aria-label="New investigation"
                     onClick={() => investigate.mutate(true)}
-                    disabled={investigate.isPending}
+                    disabled={investigate.isPending || agentBusy}
                   >
                     <Icon icon={faArrowsRotate} label="New investigation" />
                   </button>
                 ) : null}
               </>
             ) : null}
-            {openInHermesUrl && String(hermes.provider || '') !== 'agent' ? (
+            {openInHermesUrl && agentProvider !== 'agent' ? (
               <a
                 className="icon-btn"
                 href={openInHermesUrl}
@@ -200,7 +222,7 @@ export function IncidentDetailPage() {
 
         {!hermesEnabled ? (
           <div className="agent-status">
-            Hermes integration is disabled. Configure it in <Link to="/settings#aiops">Settings</Link>.
+            AIOps is disabled. Configure it in <Link to="/settings#aiops">Settings</Link>.
           </div>
         ) : (
           <div className="agent-status">{agent.statusText}</div>
@@ -218,25 +240,91 @@ export function IncidentDetailPage() {
           </div>
         ) : null}
 
+        {chat.isError ? (
+          <div className="error-banner panel" style={{ marginTop: 12 }}>
+            {(chat.error as Error).message}
+          </div>
+        ) : null}
+
         {agent.error && sessionId ? (
           <div className="error-banner panel" style={{ marginTop: 12 }}>
             {agent.error}
           </div>
         ) : null}
 
-        {sessionId ? (
-          <div className="agent-feed" style={{ marginTop: 12 }}>
-            {agent.messages.length ? (
-              agent.messages.map((msg, i) => (
-                <div key={`${msg.role}-${i}`} className={`agent-msg ${msg.role || 'message'}`}>
-                  <div className="role">{msg.role || 'message'}</div>
-                  <div>{msg.content || ''}</div>
+        {hermesEnabled ? (
+          <>
+            <div className="agent-feed" style={{ marginTop: 12 }}>
+              {agent.messages.length ? (
+                agent.messages.map((msg, i) => {
+                  const role = msg.role || 'message'
+                  return (
+                    <div key={`${role}-${i}`} className={`agent-msg ${role}`}>
+                      <div className="role">{role}</div>
+                      {role === 'assistant' ? (
+                        <AgentMarkdown content={msg.content || ''} />
+                      ) : (
+                        <div className="agent-msg-plain">{msg.content || ''}</div>
+                      )}
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="muted">
+                  No messages yet. Run Investigate for a full triage pass, or ask a question below.
                 </div>
-              ))
+              )}
+              <div ref={feedEndRef} />
+            </div>
+
+            {agentProvider === 'agent' ? (
+              <form
+                className="agent-chat"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  const text = chatDraft.trim()
+                  if (!text || agentBusy || chat.isPending) return
+                  chat.mutate(text)
+                }}
+              >
+                <textarea
+                  value={chatDraft}
+                  onChange={(e) => setChatDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      const text = chatDraft.trim()
+                      if (!text || agentBusy || chat.isPending) return
+                      chat.mutate(text)
+                    }
+                  }}
+                  placeholder={
+                    agentBusy
+                      ? 'Agent is working…'
+                      : 'Ask about this incident (Enter to send, Shift+Enter for newline)'
+                  }
+                  rows={3}
+                  disabled={agentBusy || chat.isPending}
+                />
+                <div className="actions">
+                  <button
+                    className="icon-btn primary"
+                    type="submit"
+                    title="Send"
+                    aria-label="Send"
+                    disabled={!chatDraft.trim() || agentBusy || chat.isPending}
+                  >
+                    <Icon icon={faPaperPlane} label="Send" spin={chat.isPending} />
+                  </button>
+                </div>
+              </form>
             ) : (
-              <div className="muted">No agent messages yet.</div>
+              <div className="muted" style={{ marginTop: 12 }}>
+                Incident chat requires the agent provider. Switch AIOps to Agent in{' '}
+                <Link to="/settings#aiops">Settings</Link>.
+              </div>
             )}
-          </div>
+          </>
         ) : null}
       </div>
 

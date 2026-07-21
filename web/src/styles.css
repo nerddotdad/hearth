@@ -506,7 +506,7 @@ textarea {
 .agent-feed {
   display: grid;
   gap: 10px;
-  max-height: 420px;
+  max-height: 480px;
   overflow: auto;
 }
 
@@ -515,7 +515,6 @@ textarea {
   border-radius: 10px;
   padding: 10px 12px;
   background: var(--panel);
-  white-space: pre-wrap;
   font-size: 0.92rem;
 }
 
@@ -533,6 +532,89 @@ textarea {
   letter-spacing: 0.05em;
   color: var(--muted);
   margin-bottom: 6px;
+}
+
+.agent-msg-plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-md {
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.agent-md > *:first-child {
+  margin-top: 0;
+}
+
+.agent-md > *:last-child {
+  margin-bottom: 0;
+}
+
+.agent-md p,
+.agent-md ul,
+.agent-md ol,
+.agent-md pre,
+.agent-md blockquote {
+  margin: 0.55em 0;
+}
+
+.agent-md ul,
+.agent-md ol {
+  padding-left: 1.35em;
+}
+
+.agent-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 55%, transparent);
+}
+
+.agent-md pre {
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--border) 35%, transparent);
+}
+
+.agent-md pre code {
+  padding: 0;
+  background: transparent;
+  font-size: 0.85em;
+}
+
+.agent-md a {
+  color: var(--accent);
+}
+
+.agent-md table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88em;
+  margin: 0.55em 0;
+}
+
+.agent-md th,
+.agent-md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.agent-chat {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.agent-chat textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
 }
 
 .agent-status {

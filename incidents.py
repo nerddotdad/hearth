@@ -653,15 +653,11 @@ class IncidentService:
         actor: str,
         sandbox_attach: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        import threading
         import uuid
 
-        from agent_client import AgentError
-        from integrations.registry import get_registry
-
-        hermes_integ = get_registry().hermes()
-        conversation = f"incident-{incident_id}"
         session_id = f"agent-{uuid.uuid4().hex[:12]}"
+        # Unique per run so Hermes does not append onto prior investigate history.
+        conversation = f"incident-{incident_id}-{session_id}"
         prompt = str(export.get("hermes_message") or "")
         hermes = {
             "provider": "agent",
@@ -673,6 +669,10 @@ class IncidentService:
             "started_by": actor,
             "messages": [
                 {"role": "user", "content": prompt},
+                {
+                    "role": "assistant",
+                    "content": "Agent is investigating… (live updates appear as Hermes works)",
+                },
             ],
         }
         incident = self.store.get_incident(incident_id)
@@ -688,26 +688,177 @@ class IncidentService:
             event_detail={"session_id": session_id, "provider": "agent", "sandbox": bool(sandbox_attach)},
         )
 
+        instructions = (
+            "You are the Hearth incident triage agent. Use Hearth MCP tools "
+            "for cluster inspection. Never request or emit API keys or bearer tokens."
+        )
+        self._spawn_agent_turn(
+            incident_id,
+            session_id=session_id,
+            conversation=conversation,
+            input_text=prompt,
+            instructions=instructions,
+        )
+        return self._investigate_result(incident_id, hermes)
+
+    def agent_chat(self, incident_id: str, message: str, *, actor: str = "ui") -> dict[str, Any]:
+        """Continue (or start) an incident-scoped Hermes chat turn."""
+        import uuid
+
+        from integrations.registry import get_registry
+
+        text = (message or "").strip()
+        if not text:
+            raise ValueError("message is required")
+
+        hermes_integ = get_registry().hermes()
+        if not hermes_integ.is_enabled():
+            raise HermesError("AIOps integration is disabled")
+        if hermes_integ.provider() != "agent":
+            raise ValueError("Incident chat requires AIOps agent provider (Settings → AIOps)")
+
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            raise ValueError("incident not found")
+
+        enrichment = dict(incident.get("enrichment") or {})
+        hermes = dict(enrichment.get("hermes") or {})
+        if hermes.get("status") == "running":
+            raise ValueError("Agent is busy — wait for the current reply to finish")
+
+        # Best-effort sandbox so follow-up chat can use MCP tools.
+        try:
+            from sandbox.runtime import get_sandbox_service
+
+            sb = get_sandbox_service()
+            if sb.enabled():
+                sb.attach_context(incident_id, actor=actor)
+        except Exception:
+            pass
+
+        session_id = str(hermes.get("session_id") or "").strip() or f"agent-{uuid.uuid4().hex[:12]}"
+        conversation = (
+            str(hermes.get("conversation") or "").strip() or f"incident-{incident_id}-{session_id}"
+        )
+        messages = list(hermes.get("messages") or [])
+        messages.append({"role": "user", "content": text})
+        messages.append({"role": "assistant", "content": "Thinking…"})
+
+        hermes = {
+            **hermes,
+            "provider": "agent",
+            "session_id": session_id,
+            "conversation": conversation,
+            "stream_id": f"agent:{session_id}",
+            "status": "running",
+            "messages": messages,
+            "error": None,
+            "started_at": hermes.get("started_at") or utcnow(),
+            "started_by": hermes.get("started_by") or actor,
+        }
+        hermes.pop("completed_at", None)
+        enrichment["hermes"] = hermes
+        self.store.update_incident(
+            incident_id,
+            enrichment=enrichment,
+            actor=actor,
+            event_type="agent_chat",
+            event_detail={"session_id": session_id, "provider": "agent"},
+        )
+
+        title = str(incident.get("title") or incident_id)
+        summary = str(incident.get("summary") or "")
+        instructions = (
+            "You are the Hearth incident triage agent for one specific incident. "
+            "Stay narrowly scoped to this incident unless the operator asks otherwise. "
+            "Use Hearth MCP tools for cluster inspection when helpful. "
+            "Never request or emit API keys or bearer tokens.\n\n"
+            f"Incident ID: {incident_id}\n"
+            f"Title: {title}\n"
+            f"Summary: {summary}"
+        )
+        self._spawn_agent_turn(
+            incident_id,
+            session_id=session_id,
+            conversation=conversation,
+            input_text=text,
+            instructions=instructions,
+        )
+        return self._investigate_result(incident_id, hermes)
+
+    def _spawn_agent_turn(
+        self,
+        incident_id: str,
+        *,
+        session_id: str,
+        conversation: str,
+        input_text: str,
+        instructions: str,
+    ) -> None:
+        import threading
+
+        from agent_client import AgentError
+        from integrations.registry import get_registry
+
+        hermes_integ = get_registry().hermes()
+
         def _run() -> None:
+            import time
+
             try:
                 client = hermes_integ.agent_client()
-                result = client.responses(
-                    input_text=prompt,
+                parts: list[str] = []
+                last_write = 0.0
+                for delta in client.iter_assistant_stream(
+                    input_text=input_text,
                     conversation=conversation,
-                    instructions=(
-                        "You are the Hearth incident triage agent. Use Hearth MCP tools "
-                        "for cluster inspection. Never request or emit API keys or bearer tokens."
-                    ),
-                )
-                text = client.extract_assistant_text(result)
-                self._finish_agent_investigation(incident_id, session_id, text, error=None)
+                    instructions=instructions,
+                ):
+                    parts.append(delta)
+                    now = time.time()
+                    if now - last_write >= 1.5:
+                        self._update_agent_partial(incident_id, session_id, "".join(parts))
+                        last_write = now
+                reply = "".join(parts).strip()
+                if not reply:
+                    result = client.responses(
+                        input_text=input_text,
+                        conversation=conversation,
+                        instructions=instructions,
+                    )
+                    reply = client.extract_assistant_text(result)
+                self._finish_agent_investigation(incident_id, session_id, reply, error=None)
             except AgentError as exc:
                 self._finish_agent_investigation(incident_id, session_id, "", error=str(exc))
             except Exception as exc:
                 self._finish_agent_investigation(incident_id, session_id, "", error=str(exc))
 
         threading.Thread(target=_run, name=f"hearth-agent-{incident_id}", daemon=True).start()
-        return self._investigate_result(incident_id, hermes)
+
+    def _update_agent_partial(self, incident_id: str, session_id: str, assistant_text: str) -> None:
+        """Write in-progress assistant text so the incident UI updates during long Hermes runs."""
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            return
+        enrichment = dict(incident.get("enrichment") or {})
+        hermes = dict(enrichment.get("hermes") or {})
+        if hermes.get("session_id") != session_id or hermes.get("status") != "running":
+            return
+        messages = list(hermes.get("messages") or [])
+        content = assistant_text.strip() or "Agent is investigating…"
+        if messages and messages[-1].get("role") == "assistant":
+            messages[-1] = {"role": "assistant", "content": content}
+        else:
+            messages.append({"role": "assistant", "content": content})
+        hermes["messages"] = messages
+        enrichment["hermes"] = hermes
+        self.store.update_incident(incident_id, enrichment=enrichment, actor="bridge")
+        try:
+            from events import publish_ui
+
+            publish_ui("incidents", incident_id=incident_id, reason="investigate_partial")
+        except Exception:
+            pass
 
     def _finish_agent_investigation(
         self,
@@ -725,6 +876,9 @@ class IncidentService:
         if hermes.get("session_id") != session_id:
             return
         messages = list(hermes.get("messages") or [])
+        # Drop the placeholder / partial assistant bubble, then write the final one.
+        while messages and messages[-1].get("role") == "assistant":
+            messages.pop()
         if error:
             messages.append({"role": "assistant", "content": f"Investigation failed: {error}"})
             hermes["status"] = "error"

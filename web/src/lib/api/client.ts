@@ -237,6 +237,12 @@ export const api = {
       body: JSON.stringify({ force }),
     }),
 
+  agentChat: (id: string, message: string) =>
+    request<InvestigateResult>(`/api/incidents/${encodeURIComponent(id)}/agent/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    }),
+
   getAgentSession: (id: string) =>
     request<AgentSession>(`/api/incidents/${encodeURIComponent(id)}/agent/session`),
 

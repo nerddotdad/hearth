@@ -21,7 +21,9 @@ export function useAgentSession(
 
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [statusText, setStatusText] = useState(
-    sessionId ? `Status: ${hermesStatus || 'unknown'}` : 'No agent session yet — start an investigation.',
+    sessionId
+      ? `Status: ${hermesStatus || 'unknown'}`
+      : 'No agent session yet — Investigate or send a chat message.',
   )
   const [error, setError] = useState<string | null>(null)
 
@@ -29,7 +31,7 @@ export function useAgentSession(
     if (!incidentId || !sessionId) {
       setMessages([])
       setError(null)
-      setStatusText('No agent session yet — start an investigation.')
+      setStatusText('No agent session yet — Investigate or send a chat message.')
       return
     }
 
@@ -46,9 +48,9 @@ export function useAgentSession(
         setError(null)
         setStatusText(
           data.status === 'running'
-            ? 'Agent is investigating…'
+            ? 'Agent is working…'
             : msgs.length
-              ? 'Agent session ready'
+              ? 'Ready — ask a follow-up about this incident'
               : 'Waiting for agent output',
         )
       } catch (err) {

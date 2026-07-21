@@ -1329,6 +1329,29 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, result)
             return
 
+        if path.startswith("/api/incidents/") and path.endswith("/agent/chat"):
+            if not self._require_api_auth(query):
+                return
+            iid = safe_id(path[len("/api/incidents/") : -len("/agent/chat")].strip("/"))
+            payload, err = self._read_json_body()
+            if err:
+                self._json(err, {"error": "invalid request"})
+                return
+            message = str((payload or {}).get("message") or (payload or {}).get("body") or "")
+            try:
+                result = SERVICE.agent_chat(iid, message, actor="api")
+            except ValueError as exc:
+                msg = str(exc)
+                code = 404 if "not found" in msg.lower() else 409 if "busy" in msg.lower() else 400
+                self._json(code, {"error": msg})
+                return
+            except HermesError as exc:
+                self._json(502, {"error": "agent chat failed", "detail": str(exc)})
+                return
+            publish_ui("incidents", incident_id=iid, reason="agent_chat")
+            self._json(200, result)
+            return
+
         if path in ("/mcp", "/api/mcp"):
             self._handle_mcp_post()
             return
