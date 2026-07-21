@@ -1,3 +1,6 @@
 name: hearth-secrets
-version: 0.1.0
-description: Pull tool secrets from Hearth AIOps Secrets Manager over loopback.
+version: 0.1.1
+description: >-
+  SecretSource (not a tool plugin): injects Hearth AIOps secrets into process
+  env (e.g. JELLYFIN_API_TOKEN) via loopback export. Check env vars / printenv,
+  not a plugins tool list.

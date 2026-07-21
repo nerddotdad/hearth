@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -11,9 +12,33 @@ from typing import Any, FrozenSet
 
 from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource
 
+logger = logging.getLogger(__name__)
+
 
 def register(ctx: Any) -> None:
     ctx.register_secret_source(HearthSecretSource())
+    # Hermes applies secret sources during the first load_hermes_dotenv(), which
+    # runs *before* plugins are discovered. Re-pull once registered so this
+    # process (and tools that inherit its environ) actually get the secrets.
+    _reapply_secrets_after_register()
+
+
+def _reapply_secrets_after_register() -> None:
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+        from hermes_constants import get_hermes_home
+    except Exception:
+        logger.debug("hearth-secrets: env_loader unavailable for re-apply", exc_info=True)
+        return
+    try:
+        home = Path(get_hermes_home())
+    except Exception:
+        home = Path(os.environ.get("HERMES_HOME") or "/opt/data")
+    try:
+        reset_secret_source_cache()
+        load_hermes_dotenv(hermes_home=home)
+    except Exception:
+        logger.warning("hearth-secrets: post-register secret re-apply failed", exc_info=True)
 
 
 class HearthSecretSource(SecretSource):

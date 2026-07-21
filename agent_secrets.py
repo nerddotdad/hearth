@@ -350,7 +350,10 @@ def _patch_config_yaml(
         cfg["secrets"] = secrets
 
     if backend == "hearth":
-        secrets["sources"] = ["hearth"]
+        # Do not put "hearth" in secrets.sources — Hermes validates that list
+        # before plugins load and warns "unknown source". Enabled SecretSource
+        # plugins still run after registration (and our plugin re-applies then).
+        secrets.pop("sources", None)
         secrets["hearth"] = {
             "enabled": True,
             "override_existing": True,
