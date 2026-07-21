@@ -388,6 +388,25 @@ def _patch_config_yaml(
         dict.fromkeys([*[str(x) for x in existing], *DEFAULT_PASSTHROUGH, *passthrough_keys])
     )
 
+    # Hermes discovers plugins but leaves them "not enabled" until listed here.
+    # https://hermes-agent.nousresearch.com/docs/user-guide/features/plugins
+    plugins = cfg.setdefault("plugins", {})
+    if not isinstance(plugins, dict):
+        plugins = {}
+        cfg["plugins"] = plugins
+    enabled = plugins.get("enabled") or []
+    if not isinstance(enabled, list):
+        enabled = []
+    enabled_names = [str(x) for x in enabled]
+    if backend == "hearth":
+        if PLUGIN_NAME not in enabled_names:
+            enabled_names.append(PLUGIN_NAME)
+    plugins["enabled"] = enabled_names
+    # Never leave hearth-secrets on the deny list.
+    disabled = plugins.get("disabled") or []
+    if isinstance(disabled, list) and PLUGIN_NAME in disabled:
+        plugins["disabled"] = [str(x) for x in disabled if str(x) != PLUGIN_NAME]
+
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     with cfg_path.open("w", encoding="utf-8") as fh:
         yaml.safe_dump(cfg, fh, default_flow_style=False, sort_keys=False)
