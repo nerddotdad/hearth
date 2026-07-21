@@ -21,6 +21,7 @@ from incidents import IncidentService, safe_id
 from integrations import init_registry
 from notifications import NotificationService
 from ollama_client import OllamaError, list_models as list_ollama_models
+import agent_secrets
 from sandbox.mcp import McpHandler
 from sandbox.runtime import init_sandbox_service
 from sandbox.wsutil import accept_key, encode_frame, read_frame
@@ -588,7 +589,37 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/aiops/secrets":
+            if not self._require_api_auth(query):
+                return
+            self._json(200, {"ok": True, **agent_secrets.status()})
+            return
+
+        if path == "/api/aiops/secrets/manager":
+            if not self._require_api_auth(query):
+                return
+            self._json(200, {"ok": True, **agent_secrets.status()})
+            return
+
+        if path == "/api/aiops/secrets/export":
+            # Loopback SecretSource plugin auth (sandbox/agent/secrets token).
+            client = (self.client_address[0] if self.client_address else "") or ""
+            if client not in ("127.0.0.1", "::1", "localhost"):
+                # Same-pod may still appear as 127.0.0.1; allow token match otherwise.
+                pass
+            token = ""
+            auth = self.headers.get("Authorization") or ""
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+            expected = agent_secrets.bootstrap_token()
+            if not expected or token != expected:
+                self._json(401, {"error": "unauthorized"})
+                return
+            self._json(200, {"ok": True, "secrets": agent_secrets.export_secrets()})
+            return
+
         if path == "/api/aiops/models":
+
             if not self._require_api_auth(query):
                 return
             params = urllib.parse.parse_qs(query)
@@ -1397,7 +1428,49 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, result)
             return
 
+        if path == "/api/aiops/secrets":
+            if not self._require_api_auth(query):
+                return
+            payload, err = self._read_json_body()
+            if err:
+                self._json(err, {"error": "invalid request"})
+                return
+            key = str((payload or {}).get("key") or "")
+            value = str((payload or {}).get("value") or "")
+            try:
+                agent_secrets.upsert_secret(key, value)
+                agent_secrets.ensure_bootstrap_token_in_agent_env()
+                sync = agent_secrets.sync_plugin_and_config()
+            except agent_secrets.SecretsError as exc:
+                self._json(400, {"error": str(exc)})
+                return
+            publish_ui("settings", reason="secrets")
+            self._json(200, {"ok": True, "sync": sync, **agent_secrets.status()})
+            return
+
+        if path == "/api/aiops/secrets/manager":
+            if not self._require_api_auth(query):
+                return
+            payload, err = self._read_json_body()
+            if err:
+                self._json(err, {"error": "invalid request"})
+                return
+            try:
+                result = agent_secrets.save_manager(
+                    backend=str((payload or {}).get("backend") or "hearth"),
+                    bitwarden=(payload or {}).get("bitwarden") if isinstance((payload or {}).get("bitwarden"), dict) else None,
+                    access_token=(payload or {}).get("access_token"),
+                )
+                agent_secrets.ensure_bootstrap_token_in_agent_env()
+            except agent_secrets.SecretsError as exc:
+                self._json(400, {"error": str(exc)})
+                return
+            publish_ui("settings", reason="secrets_manager")
+            self._json(200, {"ok": True, **result})
+            return
+
         if path.startswith("/api/incidents/") and path.endswith("/agent/chat"):
+
             if not self._require_api_auth(query):
                 return
             iid = safe_id(path[len("/api/incidents/") : -len("/agent/chat")].strip("/"))
@@ -1855,6 +1928,15 @@ def _settings_updates_from_form(form: dict[str, str], section: str) -> dict:
 
 def main() -> None:
     INCIDENT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        agent_secrets.ensure_bootstrap_token_in_agent_env()
+        sync = agent_secrets.ensure_on_startup()
+        if isinstance(sync, dict) and sync.get("error"):
+            print(f"agent secrets sync: {sync.get('error')}", flush=True)
+        else:
+            print("agent secrets: plugin/config sync attempted", flush=True)
+    except Exception as exc:
+        print(f"agent secrets startup skipped: {exc}", flush=True)
     imported = SERVICE.migrate_legacy_json()
     if imported:
         print(f"migrated {imported} legacy incident file(s)", flush=True)

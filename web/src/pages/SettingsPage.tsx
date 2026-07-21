@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { Icon } from '../components/Icon'
+import { SecretsManagerPanel } from '../components/SecretsManagerPanel'
 import { api, type SettingsField } from '../lib/api/client'
 import { faArrowsRotate, faFloppyDisk, faWifi } from '../lib/icons'
 
@@ -552,6 +553,8 @@ export function SettingsPage() {
                 )}
               </div>
             </section>
+
+            <SecretsManagerPanel />
           </div>
 
           <div className="actions" style={{ marginTop: 16 }}>

@@ -698,3 +698,19 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+.secrets-keys {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.secrets-key-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}

@@ -310,6 +310,49 @@ export const api = {
       body: '{}',
     }),
 
+  aiopsSecretsStatus: () =>
+    request<{
+      ok: boolean
+      backend: string
+      keys: Array<{ key: string; masked: boolean; has_value: boolean }>
+      hearth: {
+        key_count: number
+        plugin_installed: boolean
+        agent_home: string | null
+        agent_home_writable: boolean
+        restart_hint: string
+      }
+      bitwarden: {
+        enabled: boolean
+        project_id: string
+        server_url: string
+        override_existing: boolean
+        access_token_env: string
+        has_token: boolean
+      }
+    }>('/api/aiops/secrets'),
+
+  aiopsSecretsUpsert: (key: string, value: string) =>
+    request<{ ok: boolean }>('/api/aiops/secrets', {
+      method: 'POST',
+      body: JSON.stringify({ key, value }),
+    }),
+
+  aiopsSecretsDelete: (key: string) =>
+    request<{ ok: boolean }>(`/api/aiops/secrets/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    }),
+
+  aiopsSecretsManagerSave: (body: {
+    backend: string
+    access_token?: string
+    bitwarden?: Record<string, unknown>
+  }) =>
+    request<{ ok: boolean }>('/api/aiops/secrets/manager', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   aiopsStatus: () => request<AiopsStatus>('/api/aiops/status'),
 
   aiopsModels: (platform = 'ollama', url?: string) => {
